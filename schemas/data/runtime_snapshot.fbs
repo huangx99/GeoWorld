@@ -1,0 +1,22 @@
+namespace geoworld.snapshot;
+
+table PositionEcef {
+  x:double;
+  y:double;
+  z:double;
+}
+
+table RuntimeEntity {
+  world_id:ulong;
+  position:PositionEcef;
+  semantic_type:string;
+}
+
+table RuntimeSnapshot {
+  format_version:uint;
+  schema_version:uint;
+  entities:[RuntimeEntity];
+}
+
+root_type RuntimeSnapshot;
+file_identifier "GWRS";

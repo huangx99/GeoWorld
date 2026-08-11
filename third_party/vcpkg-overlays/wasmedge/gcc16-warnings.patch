@@ -1,0 +1,11 @@
+diff --git a/cmake/Helper.cmake b/cmake/Helper.cmake
+index 1111111..2222222 100644
+--- a/cmake/Helper.cmake
++++ b/cmake/Helper.cmake
+@@ -41,4 +41,6 @@ else()
+     list(APPEND WASMEDGE_CFLAGS
+       -Werror
++      -Wno-error=sfinae-incomplete
++      -Wno-error=maybe-uninitialized
+       -Wno-error=pedantic
+     )

@@ -1,0 +1,43 @@
+{
+  "name": "geoworld",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "flecs",
+    "flatbuffers"
+  ],
+  "features": {
+    "m2": {
+      "description": "Spatial and GIS dependencies",
+      "dependencies": ["gdal", "h3", "m2-spatial"]
+    },
+    "m2-spatial": {
+      "description": "Coordinate and global spatial key dependencies",
+      "dependencies": ["proj", "s2geometry"]
+    },
+    "m3": {
+      "description": "Rules and AI dependencies",
+      "dependencies": [
+        "behaviortree-cpp",
+        "lua",
+        "sol2",
+        { "name": "wasmedge", "default-features": false }
+      ]
+    },
+    "m4": {
+      "description": "Protocol and gateway dependencies",
+      "dependencies": ["grpc", "protobuf"]
+    },
+    "observability": {
+      "description": "Production logging and tracing adapters",
+      "dependencies": ["fmt", "spdlog"]
+    },
+    "benchmarks": {
+      "description": "ECS comparison benchmarks",
+      "dependencies": ["entt"]
+    },
+    "tests": {
+      "description": "External test framework",
+      "dependencies": ["catch2"]
+    }
+  }
+}

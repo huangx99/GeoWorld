@@ -1,0 +1,73 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "GeoWorld default",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/default",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "GW_BUILD_APPS": "ON",
+        "GW_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "inherits": "default",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "vcpkg",
+      "inherits": "default",
+      "binaryDir": "${sourceDir}/build/vcpkg",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "GW_REQUIRE_FLECS": "ON"
+      }
+    },
+    {
+      "name": "vcpkg-bench",
+      "inherits": "vcpkg",
+      "binaryDir": "${sourceDir}/build/vcpkg-bench",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VCPKG_MANIFEST_FEATURES": "benchmarks"
+      }
+    },
+    {
+      "name": "vcpkg-spatial",
+      "inherits": "vcpkg",
+      "binaryDir": "${sourceDir}/build/vcpkg-spatial",
+      "cacheVariables": {
+        "VCPKG_MANIFEST_FEATURES": "m2-spatial"
+      }
+    },
+    {
+      "name": "vcpkg-m3",
+      "inherits": "vcpkg",
+      "binaryDir": "${sourceDir}/build/vcpkg-m3",
+      "cacheVariables": {
+        "VCPKG_MANIFEST_FEATURES": "m3",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/third_party/vcpkg-overlays"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "default", "configurePreset": "default" },
+    { "name": "release", "configurePreset": "release" },
+    { "name": "vcpkg", "configurePreset": "vcpkg" },
+    { "name": "vcpkg-bench", "configurePreset": "vcpkg-bench" },
+    { "name": "vcpkg-spatial", "configurePreset": "vcpkg-spatial" },
+    { "name": "vcpkg-m3", "configurePreset": "vcpkg-m3" }
+  ],
+  "testPresets": [
+    { "name": "default", "configurePreset": "default", "output": { "outputOnFailure": true } },
+    { "name": "vcpkg", "configurePreset": "vcpkg", "output": { "outputOnFailure": true } },
+    { "name": "vcpkg-bench", "configurePreset": "vcpkg-bench", "output": { "outputOnFailure": true } },
+    { "name": "vcpkg-spatial", "configurePreset": "vcpkg-spatial", "output": { "outputOnFailure": true } },
+    { "name": "vcpkg-m3", "configurePreset": "vcpkg-m3", "output": { "outputOnFailure": true } }
+  ]
+}

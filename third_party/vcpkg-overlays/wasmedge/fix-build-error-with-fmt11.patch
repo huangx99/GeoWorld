@@ -1,0 +1,7 @@
+diff --git a/lib/common/errinfo.cpp b/lib/common/errinfo.cpp
+index 69aa666..b7b0857 100644
+--- a/lib/common/errinfo.cpp
++++ b/lib/common/errinfo.cpp
+@@ -6,0 +7,2 @@
++#include <fmt/ranges.h>
++

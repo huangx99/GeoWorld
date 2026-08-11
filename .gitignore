@@ -1,0 +1,11 @@
+/build/
+/.cache/
+**/vcpkg_installed/
+**/generated/
+*.user
+*.swp
+.DS_Store
+
+# Local GIS and simulation data
+/assets/local/
+/data/
