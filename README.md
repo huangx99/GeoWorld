@@ -17,6 +17,17 @@ cmake --build --preset default
 ctest --preset default
 ```
 
+## 离线成果演示
+
+```bash
+cmake --build --preset default --target geoworld-showcase
+./build/default/geoworld-showcase
+```
+
+浏览器直接打开 `build/showcase/showcase.html`，不需要网络服务。演示说明见 [docs/SHOWCASE.md](docs/SHOWCASE.md)。
+
+页面包含可旋转的三维园区疏散，以及使用 WGS84/ECEF/ENU 坐标链路、实际生成 20 万实体并执行确定性火力与战损结算的虚构演习场景。
+
 包含 flecs 的完整 M1 构建使用 vcpkg preset：
 
 ```bash

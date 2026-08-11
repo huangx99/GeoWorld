@@ -267,6 +267,14 @@ if(GW_BUILD_APPS)
     add_executable(geoworld-cli apps/geoworld-cli/main.cpp)
     target_link_libraries(geoworld-cli PRIVATE geoworld::world_model)
 
+    add_executable(geoworld-showcase apps/geoworld-showcase/main.cpp)
+    target_link_libraries(geoworld-showcase PRIVATE
+        geoworld::ai
+        geoworld::debug
+        geoworld::rules
+        geoworld::spatial
+    )
+
     add_executable(gw-rule tools/gw-artifact/main.cpp)
     target_compile_definitions(gw-rule PRIVATE GW_ARTIFACT_KIND_RULE=1)
     target_link_libraries(gw-rule PRIVATE geoworld::tooling)
@@ -335,6 +343,13 @@ if(GW_BUILD_TESTS)
     add_executable(geoworld-spatial-runtime-test tests/integration/spatial_runtime_test.cpp)
     target_link_libraries(geoworld-spatial-runtime-test PRIVATE geoworld::spatial)
     add_test(NAME geoworld.spatial_runtime COMMAND geoworld-spatial-runtime-test)
+
+    if(TARGET geoworld-showcase)
+        add_test(NAME geoworld.showcase
+            COMMAND geoworld-showcase "${CMAKE_CURRENT_BINARY_DIR}/showcase-test")
+        set_tests_properties(geoworld.showcase PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    endif()
 
     if(PROJ_FOUND)
         add_executable(geoworld-proj-crosscheck-test tests/unit/proj_crosscheck_test.cpp)

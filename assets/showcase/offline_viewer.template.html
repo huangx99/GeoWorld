@@ -1,0 +1,611 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>GeoWorld 离线推演台</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1013;
+      --panel: #121a1e;
+      --panel-2: #192328;
+      --line: #2d3c42;
+      --text: #edf3f4;
+      --muted: #91a5ab;
+      --green: #52d398;
+      --amber: #f0b95b;
+      --red: #f16c5b;
+      --blue: #55b8e8;
+      --cyan: #54c5c9;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 320px; background: var(--bg); color: var(--text); font: 14px/1.45 ui-sans-serif, system-ui, sans-serif; }
+    button, select, input { font: inherit; }
+    button, select {
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: var(--panel-2);
+      color: var(--text);
+      padding: 0 12px;
+    }
+    button { cursor: pointer; }
+    button:hover, button.active { border-color: var(--cyan); background: #20343a; }
+    header {
+      min-height: 62px;
+      padding: 9px 18px;
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      border-bottom: 1px solid var(--line);
+      background: #0e1518;
+    }
+    .brand { display: flex; align-items: baseline; gap: 10px; white-space: nowrap; }
+    .brand strong { font-size: 18px; letter-spacing: .02em; }
+    .brand span { color: var(--muted); font-size: 12px; }
+    .scenario-tabs { display: flex; gap: 7px; }
+    .scenario-tabs button { min-width: 130px; }
+    .header-meta { margin-left: auto; display: flex; align-items: center; gap: 10px; color: var(--muted); }
+    .offline { padding: 4px 8px; border: 1px solid #2c644e; border-radius: 4px; color: var(--green); font-size: 11px; letter-spacing: .08em; }
+    main { height: calc(100vh - 62px); display: grid; grid-template-columns: minmax(580px, 1fr) 340px; grid-template-rows: minmax(460px, 1fr) 188px; }
+    .workspace { min-width: 0; padding: 14px; border-right: 1px solid var(--line); }
+    .toolbar { height: 42px; display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+    .toolbar .spacer { flex: 1; }
+    .tick-label { min-width: 100px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+    .viewport {
+      position: relative;
+      width: 100%;
+      height: calc(100% - 52px);
+      min-height: 390px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: radial-gradient(circle at 50% 30%, #1c2a2f, #0c1215 72%);
+    }
+    canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+    canvas.hidden { display: none; }
+    .viewport-hint { position: absolute; left: 12px; bottom: 10px; color: #9cb0b6; font-size: 12px; pointer-events: none; }
+    .legend { position: absolute; right: 12px; top: 11px; display: flex; gap: 12px; padding: 7px 9px; background: rgba(8, 13, 15, .78); border: 1px solid var(--line); border-radius: 4px; font-size: 11px; }
+    .legend i { display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 50%; }
+    .sidebar { min-width: 0; overflow: auto; background: var(--panel); }
+    .section { padding: 15px; border-bottom: 1px solid var(--line); }
+    .section h2 { margin: 0 0 11px; font-size: 12px; color: var(--muted); font-weight: 650; letter-spacing: .06em; text-transform: uppercase; }
+    .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .stat { min-width: 0; padding: 9px 10px; border-left: 3px solid var(--line); background: var(--panel-2); }
+    .stat strong { display: block; overflow: hidden; font-size: 19px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; }
+    .stat span { color: var(--muted); font-size: 11px; }
+    .details { margin: 0; display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 6px; font-variant-numeric: tabular-nums; }
+    .details dt { color: var(--muted); }
+    .details dd { margin: 0; overflow-wrap: anywhere; }
+    .samples { width: 100%; border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums; }
+    .samples th, .samples td { padding: 5px 4px; border-bottom: 1px solid var(--line); text-align: right; }
+    .samples th:first-child, .samples td:first-child { text-align: left; }
+    .timeline { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(400px, 1fr) 410px; border-top: 1px solid var(--line); background: #0e1518; }
+    .transport { padding: 14px 18px; border-right: 1px solid var(--line); }
+    .controls { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+    input[type="range"] { width: 100%; accent-color: var(--cyan); }
+    .events { padding: 12px 16px; overflow: auto; }
+    .event { display: grid; grid-template-columns: 58px 1fr; gap: 8px; padding: 3px 0; }
+    .event time { color: var(--amber); font-variant-numeric: tabular-nums; }
+    .empty { color: var(--muted); }
+    .warning { color: var(--amber); }
+    @media (max-width: 900px) {
+      header { flex-wrap: wrap; }
+      .header-meta { margin-left: 0; }
+      main { height: auto; display: block; }
+      .workspace { border-right: 0; }
+      .viewport { height: 62vh; }
+      .timeline { display: block; }
+      .transport { border-right: 0; border-bottom: 1px solid var(--line); }
+    }
+    @media (max-width: 520px) {
+      .scenario-tabs { width: 100%; }
+      .scenario-tabs button { flex: 1; min-width: 0; }
+      .header-meta { display: none; }
+      .workspace { padding: 8px; }
+      .viewport { min-height: 340px; }
+      .timeline { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand"><strong>GeoWorld</strong><span>离线推演台</span></div>
+    <nav class="scenario-tabs">
+      <button id="evacTab" class="active">三维园区疏散</button>
+      <button id="battleTab">20 万实体演习</button>
+    </nav>
+    <div class="header-meta"><span id="runMeta"></span><span class="offline">OFFLINE</span></div>
+  </header>
+  <main>
+    <section class="workspace">
+      <div class="toolbar">
+        <button id="homeViewButton">重置视角</button>
+        <span id="sceneNote" class="empty"></span>
+        <div class="spacer"></div>
+        <span class="tick-label" id="tickLabel"></span>
+      </div>
+      <div class="viewport" id="viewport">
+        <canvas id="evacCanvas"></canvas>
+        <canvas id="battleCanvas" class="hidden"></canvas>
+        <canvas id="geoOverlay" class="hidden"></canvas>
+        <div class="legend" id="legend"></div>
+        <div class="viewport-hint" id="viewportHint"></div>
+      </div>
+    </section>
+    <aside class="sidebar" id="sidebar"></aside>
+    <section class="timeline">
+      <div class="transport">
+        <div class="controls">
+          <button id="playButton">播放</button>
+          <button id="stepButton">下一 Tick</button>
+          <button id="resetButton">重置</button>
+          <select id="speedSelect" aria-label="播放速度">
+            <option value="700">1x</option>
+            <option value="350">2x</option>
+            <option value="140">5x</option>
+          </select>
+        </div>
+        <input id="tickSlider" type="range" min="0" value="0" step="1">
+      </div>
+      <div class="events" id="events"></div>
+    </section>
+  </main>
+  <script>
+    const pack = __GEOWORLD_SHOWCASE_DATA__;
+    const evacuation = pack.scenarios.evacuation;
+    const battlefield = pack.scenarios.battlefield;
+    let scenario = 'evacuation';
+    let frameIndex = 0;
+    let selectedId = null;
+    let timer = null;
+    let yaw = -0.72;
+    let pitch = 0.58;
+    let evacZoom = 1;
+    let battleZoom = 1;
+    let battlePan = [0, 0];
+    let dragging = null;
+    let glState = null;
+    let fps = 0;
+    let fpsFrames = 0;
+    let fpsStarted = performance.now();
+
+    const viewport = document.getElementById('viewport');
+    const evacCanvas = document.getElementById('evacCanvas');
+    const battleCanvas = document.getElementById('battleCanvas');
+    const geoOverlay = document.getElementById('geoOverlay');
+    const slider = document.getElementById('tickSlider');
+    const playButton = document.getElementById('playButton');
+
+    function fitCanvas(canvas) {
+      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      const width = Math.max(1, Math.floor(canvas.clientWidth * ratio));
+      const height = Math.max(1, Math.floor(canvas.clientHeight * ratio));
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+      return { width, height, ratio };
+    }
+
+    function stop() {
+      if (timer) window.clearInterval(timer);
+      timer = null;
+      playButton.textContent = '播放';
+    }
+
+    function maxFrame() {
+      return scenario === 'evacuation' ? evacuation.frames.length - 1 : battlefield.tick_count;
+    }
+
+    function project3d(point, size) {
+      const dx = point.x - 50;
+      const dy = point.y - 48;
+      const rx = dx * Math.cos(yaw) - dy * Math.sin(yaw);
+      const depth = dx * Math.sin(yaw) + dy * Math.cos(yaw);
+      const scale = Math.min(size.width / 145, size.height / 105) * evacZoom;
+      return {
+        x: size.width * .5 + rx * scale,
+        y: size.height * .67 + (depth * Math.sin(pitch) - point.z * 5.7 * Math.cos(pitch)) * scale,
+        depth
+      };
+    }
+
+    function polygon(ctx, points, fill, stroke, size) {
+      const projected = points.map(point => project3d(point, size));
+      ctx.beginPath();
+      projected.forEach((point, index) => index ? ctx.lineTo(point.x, point.y) : ctx.moveTo(point.x, point.y));
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.fill();
+      ctx.strokeStyle = stroke;
+      ctx.stroke();
+    }
+
+    function renderEvacuation() {
+      const frame = evacuation.frames[frameIndex];
+      const fitted = fitCanvas(evacCanvas);
+      const size = { width: fitted.width / fitted.ratio, height: fitted.height / fitted.ratio };
+      const ctx = evacCanvas.getContext('2d');
+      ctx.setTransform(fitted.ratio, 0, 0, fitted.ratio, 0, 0);
+      ctx.clearRect(0, 0, size.width, size.height);
+      ctx.lineWidth = 1;
+
+      const hazardous = new Set(frame.objects.filter(item => item.type === 'floor' && item.status === 'hazard').map(item => item.floor));
+      for (let floor = 1; floor <= 3; floor += 1) {
+        const z = (floor - 1) * 4;
+        const hazard = hazardous.has(floor);
+        polygon(ctx, [{x:8,y:8,z},{x:92,y:8,z},{x:92,y:86,z},{x:8,y:86,z}],
+          hazard ? 'rgba(241,108,91,.22)' : 'rgba(69,101,111,.22)',
+          hazard ? 'rgba(241,108,91,.85)' : 'rgba(108,137,145,.66)', size);
+        const label = project3d({x:84,y:20,z}, size);
+        ctx.fillStyle = hazard ? '#f58b7d' : '#92a8ae';
+        ctx.font = '12px system-ui';
+        ctx.fillText(`${floor}F ${hazard ? '烟雾' : ''}`, label.x, label.y);
+      }
+
+      const corners = [[8,8],[92,8],[92,86],[8,86]];
+      ctx.strokeStyle = 'rgba(112,145,153,.42)';
+      corners.forEach(([x,y]) => {
+        const a = project3d({x,y,z:0}, size);
+        const b = project3d({x,y,z:8}, size);
+        ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+      });
+      ctx.strokeStyle = '#d4aa55';
+      ctx.lineWidth = 2;
+      const stairPoints = [{x:15,y:80,z:8},{x:15,y:80,z:4},{x:15,y:80,z:0},{x:5,y:90,z:0}];
+      ctx.beginPath();
+      stairPoints.map(point => project3d(point, size)).forEach((point, index) => index ? ctx.lineTo(point.x,point.y) : ctx.moveTo(point.x,point.y));
+      ctx.stroke();
+
+      const visible = frame.objects.filter(item => item.type === 'person' || item.type === 'device')
+        .map(item => ({ item, point: project3d(item, size) })).sort((a,b) => a.point.depth - b.point.depth);
+      visible.forEach(({item, point}) => {
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, item.type === 'device' ? 7 : 5, 0, Math.PI * 2);
+        ctx.fillStyle = item.type === 'device' ? (item.status === 'fault' ? '#f16c5b' : '#f0b95b')
+          : (item.status === 'safe' ? '#52d398' : item.status === 'evacuating' ? '#f16c5b' : '#55b8e8');
+        ctx.fill();
+        ctx.strokeStyle = item.id === selectedId ? '#fff' : 'rgba(255,255,255,.65)';
+        ctx.lineWidth = item.id === selectedId ? 3 : 1;
+        ctx.stroke();
+      });
+      evacCanvas._visibleObjects = visible;
+    }
+
+    function mix32(value) {
+      value = (value ^ (value >>> 16)) >>> 0;
+      value = Math.imul(value, 0x7feb352d) >>> 0;
+      value = (value ^ (value >>> 15)) >>> 0;
+      value = Math.imul(value, 0x846ca68b) >>> 0;
+      return (value ^ (value >>> 16)) >>> 0;
+    }
+
+    function unitRandom(index, salt) {
+      return mix32((index + Math.imul(salt, 0x9e3779b9) + 0x4c44424f) >>> 0) / 4294967296;
+    }
+
+    function compileShader(gl, type, source) {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
+      return shader;
+    }
+
+    function initializeBattlefield() {
+      if (glState) return glState;
+      const gl = battleCanvas.getContext('webgl2', { antialias: false, alpha: false });
+      if (!gl) {
+        glState = { error: '当前浏览器不支持 WebGL2，无法批量绘制 20 万实体。' };
+        return glState;
+      }
+      const vertex = compileShader(gl, gl.VERTEX_SHADER, `#version 300 es
+        in vec4 a_data;
+        in float a_death;
+        uniform float u_tick;
+        uniform float u_zoom;
+        uniform float u_aspect;
+        uniform vec2 u_pan;
+        out float v_team;
+        out float v_dead;
+        void main() {
+          float direction = a_data.z < 0.5 ? 1.0 : -1.0;
+          float active_tick = min(u_tick, a_death);
+          float advance_tick = min(active_tick, 35.0);
+          vec2 movement = vec2(direction * advance_tick * a_data.w, sin(a_data.y * 0.00015 + active_tick * 0.2) * 35.0);
+          vec2 local = (a_data.xy + movement - u_pan) / 30000.0 * u_zoom;
+          gl_Position = vec4(local.x / u_aspect, local.y, 0.0, 1.0);
+          gl_PointSize = 2.0;
+          v_team = a_data.z;
+          v_dead = u_tick >= a_death ? 1.0 : 0.0;
+        }`);
+      const fragment = compileShader(gl, gl.FRAGMENT_SHADER, `#version 300 es
+        precision mediump float;
+        in float v_team;
+        in float v_dead;
+        out vec4 color;
+        void main() {
+          if (v_dead > 0.5) color = vec4(0.35,0.38,0.38,0.35);
+          else color = v_team < 0.5 ? vec4(0.25,0.72,0.96,0.88) : vec4(1.0,0.35,0.28,0.88);
+        }`);
+      const program = gl.createProgram();
+      gl.attachShader(program, vertex); gl.attachShader(program, fragment); gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+
+      const deathBinary = window.atob(battlefield.death_ticks_base64);
+      const deathTicks = Uint8Array.from(deathBinary, value => value.charCodeAt(0));
+      const data = new Float32Array(battlefield.entity_count * 5);
+      for (let index = 0; index < battlefield.entity_count; index += 1) {
+        const team = index < battlefield.entity_count / 2 ? 0 : 1;
+        const teamIndex = index % (battlefield.entity_count / 2);
+        const formation = Math.floor(teamIndex / 10000);
+        const column = formation % 5;
+        const row = Math.floor(formation / 5);
+        const eastCenter = (team === 0 ? -23000 : 9000) + column * 3500;
+        const northCenter = row === 0 ? -11000 : 11000;
+        data[index * 5] = eastCenter + (unitRandom(index, 1) + unitRandom(index, 6) - 1) * 2300;
+        data[index * 5 + 1] = northCenter + (unitRandom(index, 2) + unitRandom(index, 7) - 1) * 6500;
+        data[index * 5 + 2] = team;
+        data[index * 5 + 3] = 120 + unitRandom(index, 4) * 80;
+        data[index * 5 + 4] = deathTicks[index];
+      }
+      const buffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+      const location = gl.getAttribLocation(program, 'a_data');
+      gl.enableVertexAttribArray(location);
+      gl.vertexAttribPointer(location, 4, gl.FLOAT, false, 20, 0);
+      const deathLocation = gl.getAttribLocation(program, 'a_death');
+      gl.enableVertexAttribArray(deathLocation);
+      gl.vertexAttribPointer(deathLocation, 1, gl.FLOAT, false, 20, 16);
+      glState = {
+        gl, program,
+        tick: gl.getUniformLocation(program, 'u_tick'),
+        zoom: gl.getUniformLocation(program, 'u_zoom'),
+        aspect: gl.getUniformLocation(program, 'u_aspect'),
+        pan: gl.getUniformLocation(program, 'u_pan')
+      };
+      return glState;
+    }
+
+    function renderGeoOverlay(size) {
+      const ctx = geoOverlay.getContext('2d');
+      ctx.setTransform(size.ratio, 0, 0, size.ratio, 0, 0);
+      const width = size.width / size.ratio;
+      const height = size.height / size.ratio;
+      ctx.clearRect(0, 0, width, height);
+      ctx.strokeStyle = 'rgba(126,159,166,.22)';
+      ctx.fillStyle = '#9bb0b6';
+      ctx.font = '11px ui-monospace, monospace';
+      const metersPerPixel = 60000 / height / battleZoom;
+      const origin = battlefield.origin;
+      const toScreen = (east, north) => ({
+        x: width / 2 + (east - battlePan[0]) / metersPerPixel,
+        y: height / 2 - (north - battlePan[1]) / metersPerPixel
+      });
+      for (let offset = -20000; offset <= 20000; offset += 10000) {
+        const x = width / 2 + (offset - battlePan[0]) / metersPerPixel;
+        const y = height / 2 - (offset - battlePan[1]) / metersPerPixel;
+        ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,height); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(width,y); ctx.stroke();
+        const longitude = origin.longitude + offset / (111320 * Math.cos(origin.latitude * Math.PI / 180));
+        const latitude = origin.latitude + offset / 111320;
+        ctx.fillText(`${longitude.toFixed(3)}°`, x + 3, 14);
+        ctx.fillText(`${latitude.toFixed(3)}°`, 4, y - 4);
+      }
+      ctx.fillStyle = '#e8c267';
+      ctx.fillText('虚构演习区 · WGS84 / ENU', 12, height - 34);
+      if (frameIndex >= 8) {
+        ctx.globalCompositeOperation = 'lighter';
+        const blueFront = -9000 + Math.min(frameIndex, 35) * 160;
+        const redFront = 9000 - Math.min(frameIndex, 35) * 160;
+        for (let shot = 0; shot < 30; shot += 1) {
+          const key = shot + frameIndex * 97;
+          const north = -16000 + unitRandom(key, 9) * 32000;
+          const fromBlue = shot % 2 === 0;
+          const start = toScreen(fromBlue ? blueFront : redFront, north + (unitRandom(key,10)-.5)*1200);
+          const end = toScreen(fromBlue ? redFront : blueFront, north + (unitRandom(key,11)-.5)*2200);
+          ctx.strokeStyle = fromBlue ? 'rgba(79,190,255,.48)' : 'rgba(255,102,73,.48)';
+          ctx.lineWidth = shot % 5 === 0 ? 1.8 : .8;
+          ctx.beginPath(); ctx.moveTo(start.x,start.y); ctx.lineTo(end.x,end.y); ctx.stroke();
+          if (mix32(key) % 4 === 0) {
+            const radius = 3 + (frameIndex % 3) * 1.5;
+            ctx.fillStyle = 'rgba(255,202,92,.75)';
+            ctx.beginPath(); ctx.arc(end.x,end.y,radius,0,Math.PI*2); ctx.fill();
+          }
+        }
+        ctx.globalCompositeOperation = 'source-over';
+        const contact = toScreen(0, 0);
+        ctx.fillStyle = '#f0b95b';
+        ctx.fillText('交战接触线', contact.x - 28, 26);
+      }
+    }
+
+    function renderBattlefield() {
+      const state = initializeBattlefield();
+      if (state.error) {
+        document.getElementById('events').innerHTML = `<div class="warning">${state.error}</div>`;
+        return;
+      }
+      const size = fitCanvas(battleCanvas);
+      fitCanvas(geoOverlay);
+      const { gl, program } = state;
+      gl.viewport(0, 0, size.width, size.height);
+      gl.clearColor(.035, .06, .07, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.useProgram(program);
+      gl.uniform1f(state.tick, frameIndex);
+      gl.uniform1f(state.zoom, battleZoom);
+      gl.uniform1f(state.aspect, size.width / size.height);
+      gl.uniform2f(state.pan, battlePan[0], battlePan[1]);
+      gl.drawArrays(gl.POINTS, 0, battlefield.entity_count);
+      renderGeoOverlay(size);
+    }
+
+    function evacuationSidebar(frame) {
+      const people = frame.objects.filter(item => item.type === 'person');
+      const selected = frame.objects.find(item => item.id === selectedId);
+      const detail = selected ? `
+        <dl class="details"><dt>WID</dt><dd>${selected.id}</dd><dt>类型</dt><dd>${selected.type}</dd>
+        <dt>状态</dt><dd>${selected.status}</dd><dt>楼层</dt><dd>${selected.floor}F</dd>
+        <dt>三维位置</dt><dd>${selected.x.toFixed(1)}, ${selected.y.toFixed(1)}, ${selected.z.toFixed(1)} m</dd>
+        <dt>Cell</dt><dd>${selected.cell_x}, ${selected.cell_y}, ${selected.cell_z}</dd></dl>` : '<div class="empty">点击场景内人员或设备</div>';
+      return `<section class="section"><h2>当前态势</h2><div class="stats">
+        <div class="stat"><strong>${people.filter(x=>x.status==='safe').length}</strong><span>已安全</span></div>
+        <div class="stat"><strong>${people.filter(x=>x.status==='evacuating').length}</strong><span>疏散中</span></div>
+        <div class="stat"><strong>${people.filter(x=>x.status==='working').length}</strong><span>工作中</span></div>
+        <div class="stat"><strong>${frame.objects.filter(x=>x.type==='floor'&&x.status==='hazard').length}</strong><span>烟雾楼层</span></div>
+        </div></section><section class="section"><h2>对象详情</h2>${detail}</section>
+        <section class="section"><h2>确定性结果</h2><dl class="details"><dt>最终 Hash</dt><dd>${evacuation.final_hash}</dd>
+        <dt>帧数</dt><dd>${evacuation.frames.length}</dd><dt>数据版本</dt><dd>${pack.schema_version}</dd></dl></section>`;
+    }
+
+    function battlefieldSidebar() {
+      const metrics = battlefield.metrics;
+      const sample = battlefield.samples[0];
+      const frame = battlefield.frames[frameIndex];
+      const rows = battlefield.samples.map(sample => `<tr><td>${sample.id}</td><td>${sample.team ? '红方' : '蓝方'}</td>
+        <td>${sample.latitude.toFixed(4)}</td><td>${sample.longitude.toFixed(4)}</td></tr>`).join('');
+      return `<section class="section"><h2>实时战况</h2><div class="stats">
+        <div class="stat"><strong>${frame.blue_alive.toLocaleString()}</strong><span>蓝方存活</span></div>
+        <div class="stat"><strong>${frame.red_alive.toLocaleString()}</strong><span>红方存活</span></div>
+        <div class="stat"><strong>${frame.blue_losses.toLocaleString()}</strong><span>蓝方损失</span></div>
+        <div class="stat"><strong>${frame.red_losses.toLocaleString()}</strong><span>红方损失</span></div>
+        </div></section><section class="section"><h2>火力统计</h2><div class="stats">
+        <div class="stat"><strong>${frame.shots.toLocaleString()}</strong><span>累计射击</span></div>
+        <div class="stat"><strong>${frame.hits.toLocaleString()}</strong><span>累计命中</span></div>
+        <div class="stat"><strong id="fpsValue">${fps || '—'}</strong><span>浏览器 FPS</span></div>
+        <div class="stat"><strong>1</strong><span>WebGL 绘制批次</span></div></div></section>
+        <section class="section"><h2>20 万实体后端实测</h2><dl class="details"><dt>生成耗时</dt><dd>${metrics.generation_ms.toFixed(2)} ms</dd>
+        <dt>${battlefield.tick_count} Tick 更新</dt><dd>${metrics.update_ms.toFixed(2)} ms</dd><dt>空间 Cell</dt><dd>${metrics.cell_count}</dd>
+        <dt>更新吞吐</dt><dd>${(metrics.updates_per_second/1e6).toFixed(1)}M entity/s</dd>
+        <dt>随机战力</dt><dd>HP ${battlefield.combat.health_min}-${battlefield.combat.health_max} · ATK ${battlefield.combat.attack_min}-${battlefield.combat.attack_max} · DEF ${battlefield.combat.defense_min}-${battlefield.combat.defense_max}</dd>
+        <dt>最终 Hash</dt><dd>${metrics.final_hash}</dd></dl></section>
+        <section class="section"><h2>WGS84 坐标抽样</h2><table class="samples"><thead><tr><th>WID</th><th>阵营</th><th>纬度</th><th>经度</th></tr></thead><tbody>${rows}</tbody></table>
+        <p class="empty">原点 ${battlefield.origin.latitude.toFixed(4)}°, ${battlefield.origin.longitude.toFixed(4)}° · 高 ${battlefield.origin.height.toFixed(0)} m</p></section>
+        <section class="section"><h2>坐标链路 · WID ${sample.id}</h2><dl class="details">
+        <dt>WGS84</dt><dd>${sample.latitude.toFixed(6)}°, ${sample.longitude.toFixed(6)}°, ${sample.height.toFixed(1)} m</dd>
+        <dt>ECEF</dt><dd>${sample.ecef.x.toFixed(1)}, ${sample.ecef.y.toFixed(1)}, ${sample.ecef.z.toFixed(1)} m</dd>
+        <dt>ENU</dt><dd>${sample.enu.east.toFixed(1)}, ${sample.enu.north.toFixed(1)}, ${sample.enu.up.toFixed(1)} m</dd>
+        <dt>Cell</dt><dd>${sample.cell.x}, ${sample.cell.y}, ${sample.cell.z}</dd></dl></section>`;
+    }
+
+    function render() {
+      const isEvac = scenario === 'evacuation';
+      slider.max = String(maxFrame());
+      slider.value = String(frameIndex);
+      document.getElementById('tickLabel').textContent = `Tick ${frameIndex} / ${maxFrame()}`;
+      document.getElementById('evacTab').classList.toggle('active', isEvac);
+      document.getElementById('battleTab').classList.toggle('active', !isEvac);
+      evacCanvas.classList.toggle('hidden', !isEvac);
+      battleCanvas.classList.toggle('hidden', isEvac);
+      geoOverlay.classList.toggle('hidden', isEvac);
+      document.getElementById('sceneNote').textContent = isEvac ? '全楼层三维剖视' : 'WGS84 → ECEF → ENU';
+      document.getElementById('viewportHint').textContent = isEvac ? '拖动旋转 · 滚轮缩放 · 点击实体' : '拖动平移 · 滚轮缩放 · WebGL2 单批次';
+      document.getElementById('legend').innerHTML = isEvac
+        ? '<span><i style="background:#55b8e8"></i>人员</span><span><i style="background:#f16c5b"></i>疏散/危险</span><span><i style="background:#52d398"></i>安全</span>'
+        : '<span><i style="background:#55b8e8"></i>蓝方</span><span><i style="background:#ff5948"></i>红方</span><span><i style="background:#626a6c"></i>损失</span>';
+      if (isEvac) {
+        const frame = evacuation.frames[frameIndex];
+        renderEvacuation();
+        document.getElementById('sidebar').innerHTML = evacuationSidebar(frame);
+        const visibleEvents = evacuation.frames.slice(0,frameIndex+1).flatMap(item => item.events.map(text => ({tick:item.tick,text})));
+        document.getElementById('events').innerHTML = visibleEvents.length
+          ? visibleEvents.slice(-12).map(item => `<div class="event"><time>T${item.tick}</time><span>${item.text}</span></div>`).join('')
+          : '<div class="empty">等待设备告警</div>';
+      } else {
+        renderBattlefield();
+        document.getElementById('sidebar').innerHTML = battlefieldSidebar();
+        const battleFrame = battlefield.frames[frameIndex];
+        const contact = frameIndex >= 8 ? `<div class="event"><time>T8</time><span>双方接敌，开始确定性成对火力解析</span></div>` : '';
+        document.getElementById('events').innerHTML = `<div class="event"><time>T0</time><span>载入 ${battlefield.entity_count.toLocaleString()} 个确定性实体</span></div>${contact}
+          <div class="event"><time>T${frameIndex}</time><span>射击 ${battleFrame.shots.toLocaleString()} · 命中 ${battleFrame.hits.toLocaleString()} · 总损失 ${(battleFrame.blue_losses+battleFrame.red_losses).toLocaleString()}</span></div>`;
+      }
+    }
+
+    function switchScenario(next) {
+      stop(); scenario = next; frameIndex = 0; selectedId = null; render();
+      document.getElementById('runMeta').textContent = next === 'evacuation' ? evacuation.run_id : `battlefield / ${battlefield.seed}`;
+    }
+
+    document.getElementById('evacTab').addEventListener('click', () => switchScenario('evacuation'));
+    document.getElementById('battleTab').addEventListener('click', () => switchScenario('battlefield'));
+    playButton.addEventListener('click', () => {
+      if (timer) { stop(); return; }
+      playButton.textContent = '暂停';
+      timer = window.setInterval(() => {
+        if (frameIndex >= maxFrame()) { stop(); return; }
+        frameIndex += 1; render();
+      }, Number(document.getElementById('speedSelect').value));
+    });
+    document.getElementById('stepButton').addEventListener('click', () => { stop(); frameIndex = Math.min(frameIndex + 1, maxFrame()); render(); });
+    document.getElementById('resetButton').addEventListener('click', () => { stop(); frameIndex = 0; selectedId = null; render(); });
+    slider.addEventListener('input', () => { stop(); frameIndex = Number(slider.value); render(); });
+    document.getElementById('homeViewButton').addEventListener('click', () => {
+      yaw = -.72; pitch = .58; evacZoom = 1; battleZoom = 1; battlePan = [0,0]; render();
+    });
+
+    viewport.addEventListener('pointerdown', event => {
+      dragging = { x:event.clientX, y:event.clientY, yaw, pitch, pan:[...battlePan] };
+      viewport.setPointerCapture(event.pointerId);
+    });
+    viewport.addEventListener('pointermove', event => {
+      if (!dragging) return;
+      const dx = event.clientX - dragging.x;
+      const dy = event.clientY - dragging.y;
+      if (scenario === 'evacuation') {
+        yaw = dragging.yaw + dx * .008;
+        pitch = Math.max(.2, Math.min(1.05, dragging.pitch + dy * .005));
+      } else {
+        battlePan = [dragging.pan[0] - dx * 65 / battleZoom, dragging.pan[1] + dy * 65 / battleZoom];
+      }
+      render();
+    });
+    viewport.addEventListener('pointerup', event => {
+      if (scenario === 'evacuation' && dragging && Math.hypot(event.clientX-dragging.x,event.clientY-dragging.y) < 5) {
+        const rect = evacCanvas.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        const hit = (evacCanvas._visibleObjects || []).map(entry => ({...entry, distance:Math.hypot(entry.point.x-x,entry.point.y-y)}))
+          .sort((a,b)=>a.distance-b.distance)[0];
+        if (hit && hit.distance < 15) selectedId = hit.item.id;
+      }
+      dragging = null; render();
+    });
+    viewport.addEventListener('wheel', event => {
+      event.preventDefault();
+      const factor = event.deltaY > 0 ? .9 : 1.1;
+      if (scenario === 'evacuation') evacZoom = Math.max(.55, Math.min(2.2, evacZoom * factor));
+      else battleZoom = Math.max(.6, Math.min(5, battleZoom * factor));
+      render();
+    }, { passive:false });
+    window.addEventListener('resize', render);
+
+    function fpsLoop(now) {
+      if (scenario === 'battlefield' && glState && !glState.error) {
+        renderBattlefield();
+        fpsFrames += 1;
+        if (now - fpsStarted >= 750) {
+          fps = Math.round(fpsFrames * 1000 / (now - fpsStarted));
+          fpsFrames = 0; fpsStarted = now;
+          const node = document.getElementById('fpsValue');
+          if (node) node.textContent = String(fps);
+        }
+      } else { fpsFrames = 0; fpsStarted = now; }
+      window.requestAnimationFrame(fpsLoop);
+    }
+
+    const battlefieldLink = window.location.hash.match(/^#battlefield(?:\/(\d+))?$/);
+    if (battlefieldLink) {
+      scenario = 'battlefield';
+      frameIndex = Math.min(Number(battlefieldLink[1] || 0), battlefield.tick_count);
+    }
+    document.getElementById('runMeta').textContent = scenario === 'evacuation'
+      ? evacuation.run_id : `battlefield / ${battlefield.seed}`;
+    render();
+    window.requestAnimationFrame(fpsLoop);
+  </script>
+</body>
+</html>
