@@ -1,0 +1,9 @@
+diff --git a/lib/dotgen/CMakeLists.txt b/lib/dotgen/CMakeLists.txt
+index 1111111..2222222 100644
+--- a/lib/dotgen/CMakeLists.txt
++++ b/lib/dotgen/CMakeLists.txt
+@@ -32,3 +32,4 @@ target_link_libraries(dotgen PRIVATE
+   gvc # ortho, pack
+   util
+ )
++install(TARGETS dotgen ARCHIVE DESTINATION ${LIBRARY_INSTALL_DIR})

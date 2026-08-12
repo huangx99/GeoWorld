@@ -1,0 +1,57 @@
+namespace geoworld.tooling.fb;
+
+enum ArtifactKind : ubyte {
+  Invalid = 0,
+  BehaviorTree = 1,
+  StateMachine = 2
+}
+
+table Position {
+  x:double;
+  y:double;
+}
+
+table Parameter {
+  key:string;
+  value:string;
+}
+
+table BehaviorNode {
+  id:string;
+  type:string;
+  name:string;
+  position:Position;
+  children:[string];
+  parameters:[Parameter];
+}
+
+table HfsmState {
+  id:string;
+  name:string;
+  parent:string;
+  position:Position;
+}
+
+table HfsmTransition {
+  source:string;
+  event:string;
+  target:string;
+  priority:int;
+}
+
+table BehaviorArtifact {
+  format_version:uint = 1;
+  schema_version:uint;
+  compiler_version:uint;
+  kind:ArtifactKind;
+  source_hash:string;
+  document_id:string;
+  entry_id:string;
+  behavior_nodes:[BehaviorNode];
+  hfsm_states:[HfsmState];
+  hfsm_transitions:[HfsmTransition];
+  runtime_xml:string;
+}
+
+root_type BehaviorArtifact;
+file_identifier "GWBA";

@@ -72,6 +72,31 @@ bool WasmRuntime::invoke_i32(std::string_view function, std::int32_t& result) {
 #endif
 }
 
+bool WasmRuntime::invoke_i32(std::string_view function, std::int32_t argument,
+                             std::int32_t& result) {
+#if GW_HAS_WASMEDGE
+    if (!impl_->loaded || function.empty()) {
+        return false;
+    }
+    const auto name = WasmEdge_StringCreateByBuffer(function.data(),
+                                                     static_cast<std::uint32_t>(function.size()));
+    const WasmEdge_Value input = WasmEdge_ValueGenI32(argument);
+    WasmEdge_Value output{};
+    const auto status = WasmEdge_VMExecute(impl_->vm, name, &input, 1, &output, 1);
+    WasmEdge_StringDelete(name);
+    if (!WasmEdge_ResultOK(status) || output.Type != WasmEdge_ValType_I32) {
+        return false;
+    }
+    result = WasmEdge_ValueGetI32(output);
+    return true;
+#else
+    static_cast<void>(function);
+    static_cast<void>(argument);
+    static_cast<void>(result);
+    return false;
+#endif
+}
+
 bool WasmRuntime::available() const noexcept {
 #if GW_HAS_WASMEDGE
     return impl_ != nullptr && impl_->vm != nullptr;

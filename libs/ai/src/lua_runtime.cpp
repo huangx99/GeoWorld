@@ -52,6 +52,24 @@ bool LuaRuntime::call_bool(std::string_view function) {
 #endif
 }
 
+bool LuaRuntime::call_bool(std::string_view function, std::int64_t argument) {
+#if GW_HAS_SOL2
+    if (!impl_->loaded) {
+        return false;
+    }
+    const sol::protected_function callable = impl_->state[std::string{function}];
+    if (!callable.valid()) {
+        return false;
+    }
+    const auto result = callable(argument);
+    return result.valid() && result.get_type() == sol::type::boolean && result.get<bool>();
+#else
+    static_cast<void>(function);
+    static_cast<void>(argument);
+    return false;
+#endif
+}
+
 bool LuaRuntime::available() const noexcept {
 #if GW_HAS_SOL2
     return true;

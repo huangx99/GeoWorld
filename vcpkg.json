@@ -18,9 +18,18 @@
       "description": "Rules and AI dependencies",
       "dependencies": [
         "behaviortree-cpp",
+        "nlohmann-json",
+        "json-schema-validator",
         "lua",
         "sol2",
         { "name": "wasmedge", "default-features": false }
+      ]
+    },
+    "m3-tooling-gui": {
+      "description": "M3 behavior authoring desktop UI and graph layout",
+      "dependencies": [
+        { "name": "qtbase", "default-features": false, "features": ["fontconfig", "freetype", "gui", "opengl", "widgets", "xcb"] },
+        { "name": "graphviz", "features": ["tools"] }
       ]
     },
     "m4": {

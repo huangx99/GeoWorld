@@ -2,9 +2,9 @@
 
 GeoWorld 是面向数字孪生与推演场景的 headless 可计算三维世界运行平台。
 
-M1 世界内核、M2 空间与流式、M3 规则与 AI 的核心范围已完成。工程采用 CMake + vcpkg，核心依赖通过 manifest 锁定；生成代码和三方安装结果均位于 `build/`，不提交到仓库。
+M1 世界内核和 M3 规则与 AI 已完成，M2 空间与流式的核心范围已完成。工程采用 CMake + vcpkg，核心依赖通过 manifest 锁定；生成代码和三方安装结果均位于 `build/`，不提交到仓库。
 
-- 当前阶段：[M3 规则与 AI](docs/M3.md)
+- 最新完成阶段：[M3 规则与 AI](docs/M3.md)
 - 阶段索引：[docs/README.md](docs/README.md)
 - 工程结构：[工程文件组织](docs/engineering-layout.md)
 - 开发规范：[AGENTS.md](AGENTS.md)
@@ -52,4 +52,21 @@ export VCPKG_ROOT=/path/to/vcpkg
 cmake --preset vcpkg-m3
 cmake --build --preset vcpkg-m3
 ctest --preset vcpkg-m3
+```
+
+M3 三轨插件边界 Release 基准：
+
+```bash
+cmake --preset vcpkg-m3-release
+cmake --build --preset vcpkg-m3-release --target geoworld-m3-benchmark
+./build/vcpkg-m3-release/geoworld-m3-benchmark
+```
+
+M3 行为树/HFSM 中文编辑器与 Graphviz 工具链使用独立 preset：
+
+```bash
+cmake --preset vcpkg-m3-tooling
+cmake --build --preset vcpkg-m3-tooling
+ctest --preset vcpkg-m3-tooling
+./build/vcpkg-m3-tooling/gw-behavior-editor
 ```

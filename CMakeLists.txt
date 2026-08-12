@@ -10,6 +10,7 @@ option(GW_BUILD_APPS "Build GeoWorld executables" ON)
 option(GW_BUILD_TESTS "Build GeoWorld tests" ON)
 option(GW_BUILD_BENCHMARKS "Build GeoWorld benchmarks" ON)
 option(GW_REQUIRE_FLECS "Fail configuration when flecs is unavailable" OFF)
+option(GW_BUILD_TOOLING_GUI "Build the Qt behavior authoring application" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,6 +18,23 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(GNUInstallDirs)
 include(CTest)
+
+if(GW_BUILD_TOOLING_GUI)
+    include(FetchContent)
+    set(BUILD_TESTING OFF)
+    set(BUILD_EXAMPLES OFF)
+    set(BUILD_DOCS OFF)
+    set(BUILD_SHARED_LIBS OFF)
+    set(QT_NODES_DEVELOPER_DEFAULTS OFF CACHE BOOL "" FORCE)
+    set(USE_QT6 ON CACHE BOOL "" FORCE)
+    FetchContent_Declare(qt_nodes
+        GIT_REPOSITORY https://github.com/paceholder/nodeeditor.git
+        GIT_TAG 7c6341a66a8e46b8988140b9e60d892b6a3560b3
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(qt_nodes)
+    set(BUILD_TESTING "${GW_BUILD_TESTS}")
+endif()
 
 add_library(geoworld_foundation STATIC
     libs/foundation/src/random.cpp
@@ -51,6 +69,9 @@ target_include_directories(geoworld_world_model PUBLIC
 find_package(flecs CONFIG QUIET)
 find_package(EnTT CONFIG QUIET)
 find_package(flatbuffers CONFIG QUIET)
+find_package(nlohmann_json CONFIG QUIET)
+find_package(nlohmann_json_schema_validator CONFIG QUIET)
+find_package(graphviz CONFIG QUIET)
 find_package(Boost 1.91.0 EXACT REQUIRED)
 find_package(PROJ CONFIG QUIET)
 find_package(s2 CONFIG QUIET)
@@ -124,10 +145,21 @@ target_link_libraries(geoworld_rules PUBLIC
     geoworld::schema
     geoworld::simulation
     geoworld::world_model
+    ${CMAKE_DL_LIBS}
 )
 target_include_directories(geoworld_rules PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libs/rules/include>
 )
+
+if(GW_BUILD_TESTS OR GW_BUILD_BENCHMARKS)
+    add_library(geoworld-m3-rule-plugin SHARED tests/fixtures/m3_rule_plugin.cpp)
+    target_include_directories(geoworld-m3-rule-plugin PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/libs/rules/include
+    )
+    target_compile_definitions(geoworld-m3-rule-plugin PRIVATE
+        GEOWORLD_RULE_PLUGIN_BUILD=1
+    )
+endif()
 
 add_library(geoworld_ai STATIC
     libs/ai/src/fsm.cpp
@@ -195,14 +227,60 @@ target_include_directories(geoworld_debug PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libs/debug/include>
 )
 
-add_library(geoworld_tooling STATIC
-    libs/tooling/src/artifact.cpp
-)
+set(GW_TOOLING_SOURCES libs/tooling/src/artifact.cpp)
+if(flatbuffers_FOUND AND nlohmann_json_FOUND AND nlohmann_json_schema_validator_FOUND)
+    set(GW_GENERATED_TOOLING_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/tooling")
+    set(GW_BEHAVIOR_ARTIFACT_HEADER "${GW_GENERATED_TOOLING_DIR}/behavior_artifact_generated.h")
+    add_custom_command(
+        OUTPUT "${GW_BEHAVIOR_ARTIFACT_HEADER}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${GW_GENERATED_TOOLING_DIR}"
+        COMMAND $<TARGET_FILE:flatbuffers::flatc>
+                --cpp --scoped-enums -o "${GW_GENERATED_TOOLING_DIR}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/schemas/tooling/behavior_artifact.fbs"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/schemas/tooling/behavior_artifact.fbs"
+        VERBATIM
+    )
+    list(APPEND GW_TOOLING_SOURCES
+        libs/tooling/src/behavior_document.cpp
+        libs/tooling/src/graphviz_layout.cpp
+        "${GW_BEHAVIOR_ARTIFACT_HEADER}"
+    )
+endif()
+
+add_library(geoworld_tooling STATIC ${GW_TOOLING_SOURCES})
 add_library(geoworld::tooling ALIAS geoworld_tooling)
 target_link_libraries(geoworld_tooling PUBLIC geoworld::foundation geoworld::schema)
 target_include_directories(geoworld_tooling PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libs/tooling/include>
 )
+if(flatbuffers_FOUND AND nlohmann_json_FOUND AND nlohmann_json_schema_validator_FOUND)
+    target_include_directories(geoworld_tooling PRIVATE "${GW_GENERATED_TOOLING_DIR}")
+    target_link_libraries(geoworld_tooling PRIVATE
+        flatbuffers::flatbuffers
+        nlohmann_json::nlohmann_json
+        nlohmann_json_schema_validator::validator
+    )
+    target_compile_definitions(geoworld_tooling PUBLIC GW_HAS_BEHAVIOR_TOOLING=1)
+    if(graphviz_FOUND)
+        target_link_libraries(geoworld_tooling PRIVATE
+            $<LINK_GROUP:RESCAN,
+                graphviz::gvc,
+                $<IF:$<CONFIG:Debug>,
+                    ${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/lib/libgvplugin_dot_layout.a,
+                    ${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib/libgvplugin_dot_layout.a>,
+                $<IF:$<CONFIG:Debug>,
+                    ${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/lib/libdotgen.a,
+                    ${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib/libdotgen.a>>)
+        target_compile_definitions(geoworld_tooling PUBLIC GW_HAS_GRAPHVIZ=1)
+    else()
+        target_compile_definitions(geoworld_tooling PUBLIC GW_HAS_GRAPHVIZ=0)
+    endif()
+else()
+    target_compile_definitions(geoworld_tooling PUBLIC GW_HAS_BEHAVIOR_TOOLING=0 GW_HAS_GRAPHVIZ=0)
+endif()
+
+target_sources(geoworld_ai PRIVATE libs/ai/src/artifact_runtime.cpp)
+target_link_libraries(geoworld_ai PUBLIC geoworld::tooling)
 
 add_library(geoworld_spatial STATIC
     libs/spatial/src/aoi.cpp
@@ -276,15 +354,15 @@ if(GW_BUILD_APPS)
     )
 
     add_executable(gw-rule tools/gw-artifact/main.cpp)
-    target_compile_definitions(gw-rule PRIVATE GW_ARTIFACT_KIND_RULE=1)
+    target_compile_definitions(gw-rule PRIVATE GW_ARTIFACT_KIND_RULE=1 GW_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(gw-rule PRIVATE geoworld::tooling)
 
     add_executable(gw-bt tools/gw-artifact/main.cpp)
-    target_compile_definitions(gw-bt PRIVATE GW_ARTIFACT_KIND_BT=1)
+    target_compile_definitions(gw-bt PRIVATE GW_ARTIFACT_KIND_BT=1 GW_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(gw-bt PRIVATE geoworld::tooling)
 
     add_executable(gw-st tools/gw-artifact/main.cpp)
-    target_compile_definitions(gw-st PRIVATE GW_ARTIFACT_KIND_ST=1)
+    target_compile_definitions(gw-st PRIVATE GW_ARTIFACT_KIND_ST=1 GW_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(gw-st PRIVATE geoworld::tooling)
 endif()
 
@@ -293,6 +371,11 @@ if(GW_BUILD_BENCHMARKS)
     target_link_libraries(geoworld-m1-benchmark PRIVATE geoworld::debug geoworld::simulation)
     add_executable(geoworld-m3-benchmark benchmarks/m3_runtime_benchmark.cpp)
     target_link_libraries(geoworld-m3-benchmark PRIVATE geoworld::ai geoworld::rules)
+    if(TARGET geoworld-m3-rule-plugin)
+        add_dependencies(geoworld-m3-benchmark geoworld-m3-rule-plugin)
+        target_compile_definitions(geoworld-m3-benchmark PRIVATE
+            GW_BENCHMARK_RULE_PLUGIN_PATH="$<TARGET_FILE:geoworld-m3-rule-plugin>")
+    endif()
     if(TARGET geoworld_ecs_runtime AND TARGET EnTT::EnTT)
         add_executable(geoworld-m1-ecs-comparison benchmarks/m1_ecs_comparison.cpp)
         target_link_libraries(geoworld-m1-ecs-comparison PRIVATE
@@ -300,6 +383,63 @@ if(GW_BUILD_BENCHMARKS)
             EnTT::EnTT
             $<IF:$<TARGET_EXISTS:flecs::flecs>,flecs::flecs,flecs::flecs_static>
         )
+    endif()
+endif()
+
+if(GW_BUILD_TOOLING_GUI)
+    find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL)
+    find_package(Qt6QMinimalIntegrationPlugin CONFIG REQUIRED
+        PATHS "${Qt6_DIR}/../Qt6Gui" NO_DEFAULT_PATH)
+    set(CMAKE_AUTOMOC ON)
+    add_executable(gw-behavior-editor
+        tools/gw-behavior-editor/main.cpp
+        tools/gw-behavior-editor/main_window.cpp
+        tools/gw-behavior-editor/main_window.hpp
+        tools/gw-behavior-editor/behavior_graph_model.cpp
+        tools/gw-behavior-editor/behavior_graph_model.hpp
+        tools/gw-behavior-editor/hfsm_graph_model.cpp
+        tools/gw-behavior-editor/hfsm_graph_model.hpp
+    )
+    target_link_libraries(gw-behavior-editor PRIVATE
+        geoworld::tooling
+        Qt6::Core
+        Qt6::Gui
+        Qt6::Widgets
+        Qt6::QMinimalIntegrationPlugin
+        QtNodes::QtNodes
+    )
+    qt_add_resources(gw-behavior-editor behavior_schemas
+        PREFIX "/schemas"
+        BASE "${CMAKE_CURRENT_SOURCE_DIR}/schemas/tooling"
+        FILES
+            schemas/tooling/behavior_tree.schema.json
+            schemas/tooling/hfsm.schema.json
+    )
+    if(GW_BUILD_TESTS)
+        add_test(NAME geoworld.gw_bt.cli
+            COMMAND ${CMAKE_COMMAND}
+                -DTOOL=$<TARGET_FILE:gw-bt>
+                -DDOCUMENT=${CMAKE_CURRENT_SOURCE_DIR}/assets/fixtures/m3_behavior_tree.json
+                -DARTIFACT=${CMAKE_CURRENT_BINARY_DIR}/testing/m3_behavior_tree.gwbt
+                -DLAYOUT=${CMAKE_CURRENT_BINARY_DIR}/testing/m3_behavior_tree.layout.json
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/tooling_cli_test.cmake)
+        add_test(NAME geoworld.gw_st.cli
+            COMMAND ${CMAKE_COMMAND}
+                -DTOOL=$<TARGET_FILE:gw-st>
+                -DDOCUMENT=${CMAKE_CURRENT_SOURCE_DIR}/assets/fixtures/m3_hfsm.json
+                -DARTIFACT=${CMAKE_CURRENT_BINARY_DIR}/testing/m3_hfsm.gwst
+                -DLAYOUT=${CMAKE_CURRENT_BINARY_DIR}/testing/m3_hfsm.layout.json
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/tooling_cli_test.cmake)
+        add_test(NAME geoworld.behavior_editor.bt_smoke
+            COMMAND gw-behavior-editor --smoke
+                    "${CMAKE_CURRENT_SOURCE_DIR}/assets/fixtures/m3_behavior_tree.json")
+        set_tests_properties(geoworld.behavior_editor.bt_smoke PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=minimal")
+        add_test(NAME geoworld.behavior_editor.hfsm_smoke
+            COMMAND gw-behavior-editor --smoke
+                    "${CMAKE_CURRENT_SOURCE_DIR}/assets/fixtures/m3_hfsm.json")
+        set_tests_properties(geoworld.behavior_editor.hfsm_smoke PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=minimal")
     endif()
 endif()
 
@@ -314,6 +454,9 @@ if(GW_BUILD_TESTS)
 
     add_executable(geoworld-rules-test tests/unit/rules_test.cpp)
     target_link_libraries(geoworld-rules-test PRIVATE geoworld::rules)
+    add_dependencies(geoworld-rules-test geoworld-m3-rule-plugin)
+    target_compile_definitions(geoworld-rules-test PRIVATE
+        GW_TEST_RULE_PLUGIN_PATH="$<TARGET_FILE:geoworld-m3-rule-plugin>")
     add_test(NAME geoworld.rules COMMAND geoworld-rules-test)
 
     add_executable(geoworld-ai-test tests/unit/ai_test.cpp)

@@ -1,0 +1,23 @@
+get_filename_component(output_directory "${ARTIFACT}" DIRECTORY)
+file(MAKE_DIRECTORY "${output_directory}")
+
+foreach(command IN ITEMS validate compile inspect layout)
+    if(command STREQUAL "validate")
+        set(arguments validate "${DOCUMENT}")
+    elseif(command STREQUAL "compile")
+        set(arguments compile "${DOCUMENT}" "${ARTIFACT}")
+    elseif(command STREQUAL "inspect")
+        set(arguments inspect "${ARTIFACT}")
+    else()
+        set(arguments layout "${DOCUMENT}" "${LAYOUT}")
+    endif()
+    execute_process(COMMAND "${TOOL}" ${arguments} RESULT_VARIABLE result
+                    OUTPUT_VARIABLE output ERROR_VARIABLE error)
+    if(NOT result EQUAL 0)
+        message(FATAL_ERROR "${command} 失败\n${output}\n${error}")
+    endif()
+endforeach()
+
+if(NOT EXISTS "${ARTIFACT}" OR NOT EXISTS "${LAYOUT}")
+    message(FATAL_ERROR "CLI 未生成预期制品或布局文档")
+endif()

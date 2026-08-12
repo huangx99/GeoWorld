@@ -91,5 +91,24 @@ int main() {
         || !plugins.unregister_plugin("test.plugin") || shutdown != 1) {
         return 1;
     }
+#if defined(GW_TEST_RULE_PLUGIN_PATH)
+    if (plugins.load_plugin("geoworld-plugin-that-does-not-exist", &host)
+        || plugins.last_error().empty()
+        || !plugins.load_plugin(GW_TEST_RULE_PLUGIN_PATH, &host)
+        || plugins.size() != 1
+        || plugins.dispatch(event) != 1
+        || plugins.load_plugin(GW_TEST_RULE_PLUGIN_PATH, &host)
+        || plugins.last_error().empty()
+        || !plugins.unregister_plugin("geoworld.test.positive-subject")) {
+        return 1;
+    }
+    {
+        geoworld::rules::PluginRegistry automatically_unloaded;
+        if (!automatically_unloaded.load_plugin(GW_TEST_RULE_PLUGIN_PATH, &host)
+            || automatically_unloaded.dispatch(event) != 1) {
+            return 1;
+        }
+    }
+#endif
     return 0;
 }

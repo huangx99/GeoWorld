@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -18,6 +19,7 @@ public:
 
     [[nodiscard]] bool load(std::string_view script);
     [[nodiscard]] bool call_bool(std::string_view function);
+    [[nodiscard]] bool call_bool(std::string_view function, std::int64_t argument);
     [[nodiscard]] bool available() const noexcept;
 
 private:

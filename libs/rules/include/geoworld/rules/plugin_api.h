@@ -7,6 +7,15 @@ extern "C" {
 #endif
 
 #define GEOWORLD_RULE_PLUGIN_ABI_VERSION 1u
+#define GEOWORLD_RULE_PLUGIN_ENTRY_SYMBOL "geoworld_rule_plugin_entry"
+
+#if defined(_WIN32) && defined(GEOWORLD_RULE_PLUGIN_BUILD)
+#define GEOWORLD_RULE_PLUGIN_EXPORT __declspec(dllexport)
+#elif !defined(_WIN32) && (defined(__GNUC__) || defined(__clang__))
+#define GEOWORLD_RULE_PLUGIN_EXPORT __attribute__((visibility("default")))
+#else
+#define GEOWORLD_RULE_PLUGIN_EXPORT
+#endif
 
 typedef struct geoworld_rule_event_v1 {
     const char* type;
@@ -33,6 +42,9 @@ typedef struct geoworld_rule_plugin_v1 {
 } geoworld_rule_plugin_v1;
 
 typedef const geoworld_rule_plugin_v1* (*geoworld_rule_plugin_entry_v1)(void);
+
+GEOWORLD_RULE_PLUGIN_EXPORT const geoworld_rule_plugin_v1*
+geoworld_rule_plugin_entry(void);
 
 #ifdef __cplusplus
 }

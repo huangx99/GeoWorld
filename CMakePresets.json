@@ -53,6 +53,27 @@
         "VCPKG_MANIFEST_FEATURES": "m3",
         "VCPKG_OVERLAY_PORTS": "${sourceDir}/third_party/vcpkg-overlays"
       }
+    },
+    {
+      "name": "vcpkg-m3-tooling",
+      "inherits": "vcpkg-m3",
+      "binaryDir": "${sourceDir}/build/vcpkg-m3-tooling",
+      "cacheVariables": {
+        "VCPKG_MANIFEST_FEATURES": "m3;m3-tooling-gui",
+        "GW_BUILD_TOOLING_GUI": "ON",
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "vcpkg-m3-release",
+      "inherits": "vcpkg-m3",
+      "binaryDir": "${sourceDir}/build/vcpkg-m3-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "GW_BUILD_APPS": "OFF",
+        "GW_BUILD_TESTS": "OFF",
+        "GW_BUILD_BENCHMARKS": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -61,13 +82,16 @@
     { "name": "vcpkg", "configurePreset": "vcpkg" },
     { "name": "vcpkg-bench", "configurePreset": "vcpkg-bench" },
     { "name": "vcpkg-spatial", "configurePreset": "vcpkg-spatial" },
-    { "name": "vcpkg-m3", "configurePreset": "vcpkg-m3" }
+    { "name": "vcpkg-m3", "configurePreset": "vcpkg-m3" },
+    { "name": "vcpkg-m3-tooling", "configurePreset": "vcpkg-m3-tooling" },
+    { "name": "vcpkg-m3-release", "configurePreset": "vcpkg-m3-release" }
   ],
   "testPresets": [
     { "name": "default", "configurePreset": "default", "output": { "outputOnFailure": true } },
     { "name": "vcpkg", "configurePreset": "vcpkg", "output": { "outputOnFailure": true } },
     { "name": "vcpkg-bench", "configurePreset": "vcpkg-bench", "output": { "outputOnFailure": true } },
     { "name": "vcpkg-spatial", "configurePreset": "vcpkg-spatial", "output": { "outputOnFailure": true } },
-    { "name": "vcpkg-m3", "configurePreset": "vcpkg-m3", "output": { "outputOnFailure": true } }
+    { "name": "vcpkg-m3", "configurePreset": "vcpkg-m3", "output": { "outputOnFailure": true } },
+    { "name": "vcpkg-m3-tooling", "configurePreset": "vcpkg-m3-tooling", "output": { "outputOnFailure": true } }
   ]
 }

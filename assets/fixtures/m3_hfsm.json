@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "machine_id": "EvacuationAgent",
+  "initial_state": "normal/working",
+  "states": [
+    { "id": "normal", "name": "正常", "parent": "", "position": { "x": 80.0, "y": 80.0 } },
+    { "id": "normal/working", "name": "工作", "parent": "normal", "position": { "x": 100.0, "y": 180.0 } },
+    { "id": "emergency", "name": "应急", "parent": "", "position": { "x": 400.0, "y": 80.0 } },
+    { "id": "emergency/evacuating", "name": "疏散中", "parent": "emergency", "position": { "x": 400.0, "y": 180.0 } },
+    { "id": "safe", "name": "安全", "parent": "", "position": { "x": 700.0, "y": 80.0 } }
+  ],
+  "transitions": [
+    { "source": "normal", "event": "alarm", "target": "emergency/evacuating", "priority": 100 },
+    { "source": "emergency/evacuating", "event": "arrived", "target": "safe", "priority": 100 }
+  ]
+}

@@ -19,6 +19,8 @@ public:
 
     [[nodiscard]] bool load(std::vector<std::uint8_t> module);
     [[nodiscard]] bool invoke_i32(std::string_view function, std::int32_t& result);
+    [[nodiscard]] bool invoke_i32(std::string_view function, std::int32_t argument,
+                                  std::int32_t& result);
     [[nodiscard]] bool available() const noexcept;
 
 private:

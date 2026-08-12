@@ -1,3 +1,13 @@
 # gw-bt
 
-BehaviorTree.CPP XML 资产的校验、依赖检查和运行时制品生成工具。当前命令 `gw-bt <source-file>` 输出版本化制品头和源码 hash；图形编辑使用 Groot2。
+行为树编辑文档命令行工具：
+
+```bash
+gw-bt validate tree.json
+gw-bt dot tree.json tree.dot
+gw-bt layout tree.json tree.layout.json
+gw-bt compile tree.json tree.gwbt
+gw-bt inspect tree.gwbt
+```
+
+`layout` 使用 Graphviz dot 引擎写回编辑坐标；`compile` 输出版本化 FlatBuffers 制品。所有入口都会先执行 JSON Schema 与语义校验。
