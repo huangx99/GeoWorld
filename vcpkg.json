@@ -34,7 +34,7 @@
     },
     "m4": {
       "description": "Protocol and gateway dependencies",
-      "dependencies": ["grpc", "protobuf"]
+      "dependencies": ["grpc", "protobuf", "boost-asio", "boost-beast", "openssl", "mimalloc"]
     },
     "observability": {
       "description": "Production logging and tracing adapters",

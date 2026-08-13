@@ -11,6 +11,7 @@ option(GW_BUILD_TESTS "Build GeoWorld tests" ON)
 option(GW_BUILD_BENCHMARKS "Build GeoWorld benchmarks" ON)
 option(GW_REQUIRE_FLECS "Fail configuration when flecs is unavailable" OFF)
 option(GW_BUILD_TOOLING_GUI "Build the Qt behavior authoring application" OFF)
+option(GW_BUILD_M4 "Build M4 network targets (protocol, gateway)" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -38,9 +39,12 @@ endif()
 
 add_library(geoworld_foundation STATIC
     libs/foundation/src/random.cpp
+    libs/foundation/src/thread_pool.cpp
     libs/foundation/src/version.cpp
 )
 add_library(geoworld::foundation ALIAS geoworld_foundation)
+find_package(Threads REQUIRED)
+target_link_libraries(geoworld_foundation PUBLIC Threads::Threads)
 target_include_directories(geoworld_foundation
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libs/foundation/include>
@@ -320,11 +324,163 @@ if(TARGET geoworld_ecs_runtime)
         geoworld::observability
         geoworld::schema
         geoworld::simulation
+        geoworld::spatial
         geoworld::world_model
     )
     target_include_directories(geoworld_world_runtime PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/runtime/world_runtime/include>
     )
+endif()
+
+add_library(geoworld_projection STATIC
+    libs/projection/src/canonical.cpp
+    libs/projection/src/config.cpp
+    libs/projection/src/connection.cpp
+    libs/projection/src/engine.cpp
+    libs/projection/src/policy.cpp
+)
+add_library(geoworld::projection ALIAS geoworld_projection)
+target_link_libraries(geoworld_projection PUBLIC
+    geoworld::foundation
+    geoworld::schema
+    geoworld::spatial
+    geoworld::world_model
+)
+target_include_directories(geoworld_projection PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libs/projection/include>
+)
+
+# M4-B/M4-C：版本化协议与 Gateway。网络目标由 GW_BUILD_M4 显式控制。
+if(GW_BUILD_M4)
+    if(NOT flatbuffers_FOUND)
+        message(FATAL_ERROR "GW_BUILD_M4 requires flatbuffers")
+    endif()
+    find_package(Protobuf CONFIG REQUIRED)
+    find_package(gRPC CONFIG REQUIRED)
+    find_package(OpenSSL REQUIRED)
+
+    set(GW_M4_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/m4")
+    set(GW_M4_STREAM_GENERATED
+        "${GW_M4_GENERATED_DIR}/world_stream_generated.h"
+        "${GW_M4_GENERATED_DIR}/client_stream_generated.h"
+    )
+    add_custom_command(
+        OUTPUT ${GW_M4_STREAM_GENERATED}
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${GW_M4_GENERATED_DIR}"
+        COMMAND $<TARGET_FILE:flatbuffers::flatc>
+                --cpp --scoped-enums -o "${GW_M4_GENERATED_DIR}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/schemas/data/world_stream.fbs"
+                "${CMAKE_CURRENT_SOURCE_DIR}/schemas/data/client_stream.fbs"
+        DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/schemas/data/world_stream.fbs"
+            "${CMAKE_CURRENT_SOURCE_DIR}/schemas/data/client_stream.fbs"
+        VERBATIM
+    )
+
+    set(GW_M4_CONTROL_GENERATED
+        "${GW_M4_GENERATED_DIR}/geoworld_control.pb.cc"
+        "${GW_M4_GENERATED_DIR}/geoworld_control.pb.h"
+        "${GW_M4_GENERATED_DIR}/geoworld_control.grpc.pb.cc"
+        "${GW_M4_GENERATED_DIR}/geoworld_control.grpc.pb.h"
+    )
+    add_custom_command(
+        OUTPUT ${GW_M4_CONTROL_GENERATED}
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${GW_M4_GENERATED_DIR}"
+        COMMAND $<TARGET_FILE:protobuf::protoc>
+                --cpp_out=${GW_M4_GENERATED_DIR}
+                --grpc_out=${GW_M4_GENERATED_DIR}
+                --plugin=protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
+                -I "${CMAKE_CURRENT_SOURCE_DIR}/schemas/control"
+                "${CMAKE_CURRENT_SOURCE_DIR}/schemas/control/geoworld_control.proto"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/schemas/control/geoworld_control.proto"
+        VERBATIM
+    )
+
+    add_library(geoworld_protocol STATIC
+        libs/protocol/src/codec.cpp
+        libs/protocol/src/replica.cpp
+        ${GW_M4_STREAM_GENERATED}
+        ${GW_M4_CONTROL_GENERATED}
+    )
+    add_library(geoworld::protocol ALIAS geoworld_protocol)
+    target_link_libraries(geoworld_protocol
+        PUBLIC
+            geoworld::foundation
+            geoworld::schema
+        PRIVATE
+            flatbuffers::flatbuffers
+            protobuf::libprotobuf
+            gRPC::grpc++
+    )
+    target_include_directories(geoworld_protocol PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libs/protocol/include>
+    )
+    target_include_directories(geoworld_protocol PRIVATE "${GW_M4_GENERATED_DIR}")
+
+    add_library(geoworld_gateway STATIC
+        libs/gateway/src/auth.cpp
+        libs/gateway/src/config.cpp
+        libs/gateway/src/control_server.cpp
+        libs/gateway/src/errors.cpp
+        libs/gateway/src/frame_codec.cpp
+        libs/gateway/src/gateway_core.cpp
+        libs/gateway/src/ownership.cpp
+        libs/gateway/src/queues.cpp
+        libs/gateway/src/session.cpp
+        libs/gateway/src/stream_transport.cpp
+        # 仅头文件：建立对 codegen 自定义命令的依赖，不重复编译 pb 源。
+        "${GW_M4_GENERATED_DIR}/geoworld_control.pb.h"
+        "${GW_M4_GENERATED_DIR}/geoworld_control.grpc.pb.h"
+    )
+    add_library(geoworld::gateway ALIAS geoworld_gateway)
+    target_link_libraries(geoworld_gateway PUBLIC
+        geoworld::projection
+        geoworld::protocol
+        geoworld::simulation
+    )
+    # 网络与生成代码只进入实现：gRPC/Protobuf/OpenSSL/Boost 均为 PRIVATE。
+    target_link_libraries(geoworld_gateway PRIVATE
+        flatbuffers::flatbuffers
+        gRPC::grpc++
+        protobuf::libprotobuf
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    )
+    if(TARGET Boost::headers)
+        target_link_libraries(geoworld_gateway PRIVATE Boost::headers)
+    elseif(TARGET Boost::boost)
+        target_link_libraries(geoworld_gateway PRIVATE Boost::boost)
+    endif()
+    target_include_directories(geoworld_gateway PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libs/gateway/include>
+    )
+    target_include_directories(geoworld_gateway PRIVATE "${GW_M4_GENERATED_DIR}")
+
+    # 参考客户端共享实现：gw-stream-client 与 m4 集成测试复用。
+    add_library(geoworld_stream_client STATIC
+        tools/gw-stream-client/stream_client.cpp
+        "${GW_M4_GENERATED_DIR}/geoworld_control.pb.h"
+        "${GW_M4_GENERATED_DIR}/geoworld_control.grpc.pb.h"
+    )
+    target_include_directories(geoworld_stream_client PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tools/gw-stream-client>
+    )
+    target_include_directories(geoworld_stream_client PRIVATE "${GW_M4_GENERATED_DIR}")
+    target_link_libraries(geoworld_stream_client PUBLIC
+        geoworld::gateway
+        geoworld::protocol
+    )
+    target_link_libraries(geoworld_stream_client PRIVATE
+        gRPC::grpc++
+        protobuf::libprotobuf
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    )
+    if(TARGET Boost::headers)
+        target_link_libraries(geoworld_stream_client PRIVATE Boost::headers)
+    elseif(TARGET Boost::boost)
+        target_link_libraries(geoworld_stream_client PRIVATE Boost::boost)
+    endif()
 endif()
 
 if(GW_BUILD_APPS)
@@ -337,6 +493,21 @@ if(GW_BUILD_APPS)
     if(TARGET geoworld_ecs_runtime)
         target_link_libraries(geoworldd PRIVATE geoworld::ecs_runtime)
         target_compile_definitions(geoworldd PRIVATE GW_HAS_ECS_RUNTIME=1)
+    endif()
+    # M4 组合根需要 gateway 与 world_runtime 同时具备；缺一时保持原样可构建。
+    if(TARGET geoworld_gateway AND TARGET geoworld_world_runtime)
+        target_link_libraries(geoworldd PRIVATE
+            geoworld::gateway
+            geoworld::projection
+            geoworld::world_runtime
+        )
+        target_compile_definitions(geoworldd PRIVATE GW_BUILD_M4=1)
+    else()
+        target_compile_definitions(geoworldd PRIVATE GW_BUILD_M4=0)
+    endif()
+    if(TARGET geoworld_stream_client)
+        add_executable(gw-stream-client tools/gw-stream-client/main.cpp)
+        target_link_libraries(gw-stream-client PRIVATE geoworld_stream_client)
     endif()
 
     add_executable(geoworld-replay apps/geoworld-replay/main.cpp)
@@ -383,6 +554,47 @@ if(GW_BUILD_BENCHMARKS)
             EnTT::EnTT
             $<IF:$<TARGET_EXISTS:flecs::flecs>,flecs::flecs,flecs::flecs_static>
         )
+    endif()
+    # R4 Gateway 扇出基准：只在 M4 目标可用时注册；与 m1/m3 一样不注册为 CTest 用例。
+    if(TARGET geoworld_gateway AND TARGET geoworld_stream_client)
+        # 依赖版本随基准结果输出（验收门 9）；取不到的标记 unknown，不硬编码。
+        foreach(version_pair IN ITEMS
+                "GW_BENCH_BOOST_VERSION:Boost_VERSION"
+                "GW_BENCH_PROTOBUF_VERSION:Protobuf_VERSION"
+                "GW_BENCH_GRPC_VERSION:gRPC_VERSION"
+                "GW_BENCH_OPENSSL_VERSION:OPENSSL_VERSION_STR"
+                "GW_BENCH_FLATBUFFERS_VERSION:flatbuffers_VERSION")
+            string(REGEX REPLACE ":.*$" "" define_name "${version_pair}")
+            string(REGEX REPLACE "^.*:" "" source_var "${version_pair}")
+            if(DEFINED ${source_var} AND NOT "${${source_var}}" STREQUAL "")
+                set(bench_dep_value "${${source_var}}")
+            else()
+                set(bench_dep_value "unknown")
+            endif()
+            list(APPEND bench_dep_definitions
+                "${define_name}=\"${bench_dep_value}\"")
+        endforeach()
+        add_executable(geoworld-m4-benchmark benchmarks/m4_gateway_benchmark.cpp
+            benchmarks/mi_new_override.cpp)
+        target_link_libraries(geoworld-m4-benchmark PRIVATE
+            geoworld::gateway
+            geoworld::projection
+            geoworld::protocol
+            geoworld_stream_client
+        )
+        # mimalloc 仅为基准进程的分配器覆盖依赖：缺失时退回系统 malloc，
+        # 基准语义与输出不受影响（仅性能差异）。
+        find_package(mimalloc CONFIG QUIET)
+        if(TARGET mimalloc-static)
+            target_link_libraries(geoworld-m4-benchmark PRIVATE mimalloc-static)
+            target_compile_definitions(geoworld-m4-benchmark PRIVATE GW_BENCH_MIMALLOC=1)
+        endif()
+        target_compile_definitions(geoworld-m4-benchmark PRIVATE
+            GW_BENCH_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+            ${bench_dep_definitions}
+        )
+        unset(bench_dep_definitions)
+        unset(bench_dep_value)
     endif()
 endif()
 
@@ -487,6 +699,52 @@ if(GW_BUILD_TESTS)
     target_link_libraries(geoworld-spatial-runtime-test PRIVATE geoworld::spatial)
     add_test(NAME geoworld.spatial_runtime COMMAND geoworld-spatial-runtime-test)
 
+    add_executable(geoworld-projection-test tests/unit/projection_test.cpp)
+    target_link_libraries(geoworld-projection-test PRIVATE geoworld::projection)
+    add_test(NAME geoworld.projection COMMAND geoworld-projection-test)
+
+    if(TARGET geoworld_protocol)
+        add_executable(geoworld-protocol-test tests/unit/protocol_test.cpp)
+        target_link_libraries(geoworld-protocol-test PRIVATE geoworld::protocol)
+        add_test(NAME geoworld.protocol COMMAND geoworld-protocol-test)
+    endif()
+
+    if(TARGET geoworld_gateway)
+        add_executable(geoworld-gateway-test tests/unit/gateway_test.cpp)
+        target_link_libraries(geoworld-gateway-test PRIVATE geoworld::gateway)
+        add_test(NAME geoworld.gateway COMMAND geoworld-gateway-test)
+    endif()
+
+    if(TARGET geoworld_gateway AND TARGET geoworld_world_runtime
+            AND TARGET geoworld_stream_client)
+        add_executable(geoworld-m4-stream-test tests/integration/m4_stream_test.cpp)
+        target_link_libraries(geoworld-m4-stream-test PRIVATE
+            geoworld_stream_client
+            geoworld::gateway
+            geoworld::projection
+            geoworld::world_runtime
+        )
+        add_test(NAME geoworld.m4_stream COMMAND geoworld-m4-stream-test)
+
+        add_executable(geoworld-m4-security-test tests/integration/m4_security_test.cpp)
+        target_link_libraries(geoworld-m4-security-test PRIVATE
+            geoworld_stream_client
+            geoworld::gateway
+            geoworld::projection
+            geoworld::world_runtime
+            gRPC::grpc++
+            protobuf::libprotobuf
+        )
+        # 直接构造 gRPC 无效请求需要生成的控制面类型；生成代码不进入仓库。
+        target_include_directories(geoworld-m4-security-test PRIVATE
+            "${GW_M4_GENERATED_DIR}")
+        if(TARGET geoworldd)
+            target_compile_definitions(geoworld-m4-security-test PRIVATE
+                GW_GEOWORLD_DAEMON_PATH="$<TARGET_FILE:geoworldd>")
+        endif()
+        add_test(NAME geoworld.m4_security COMMAND geoworld-m4-security-test)
+    endif()
+
     if(TARGET geoworld-showcase)
         add_test(NAME geoworld.showcase
             COMMAND geoworld-showcase "${CMAKE_CURRENT_BINARY_DIR}/showcase-test")
@@ -517,5 +775,13 @@ if(GW_BUILD_TESTS)
         add_executable(geoworld-world-runtime-test tests/integration/world_runtime_test.cpp)
         target_link_libraries(geoworld-world-runtime-test PRIVATE geoworld::world_runtime)
         add_test(NAME geoworld.world_runtime COMMAND geoworld-world-runtime-test)
+
+        add_executable(geoworld-projection-runtime-test
+            tests/integration/projection_runtime_test.cpp)
+        target_link_libraries(geoworld-projection-runtime-test PRIVATE
+            geoworld::projection
+            geoworld::world_runtime
+        )
+        add_test(NAME geoworld.projection_runtime COMMAND geoworld-projection-runtime-test)
     endif()
 endif()

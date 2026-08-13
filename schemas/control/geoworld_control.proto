@@ -1,0 +1,170 @@
+syntax = "proto3";
+
+package geoworld.control.v1;
+
+// GeoWorld M4 控制面。只承载低频请求-响应，不承载持续高频世界状态。
+// 错误码语义冻结于 docs/M4.md（GWG001-GWG204），只能追加不能复用。
+
+service GeoWorldControl {
+  rpc OpenSession(OpenSessionRequest) returns (OpenSessionResponse);
+  rpc CloseSession(CloseSessionRequest) returns (CloseSessionResponse);
+  rpc UpdateSubscription(UpdateSubscriptionRequest) returns (UpdateSubscriptionResponse);
+  rpc AcquireOwnership(AcquireOwnershipRequest) returns (AcquireOwnershipResponse);
+  rpc ReleaseOwnership(ReleaseOwnershipRequest) returns (ReleaseOwnershipResponse);
+  rpc SubmitCommand(SubmitCommandRequest) returns (SubmitCommandResponse);
+  rpc RequestKeyframe(RequestKeyframeRequest) returns (RequestKeyframeResponse);
+  rpc GetServerInfo(GetServerInfoRequest) returns (GetServerInfoResponse);
+}
+
+message VersionRange {
+  uint32 minimum = 1;
+  uint32 maximum = 2;
+}
+
+message Error {
+  string code = 1;
+  string message = 2;
+}
+
+message Vec3Enu {
+  double east = 1;
+  double north = 2;
+  double up = 3;
+}
+
+message AabbEnu {
+  Vec3Enu minimum = 1;
+  Vec3Enu maximum = 2;
+}
+
+message FollowSubscription {
+  uint64 follow_wid = 1;
+  double radius_meters = 2;
+}
+
+message Subscription {
+  oneof interest {
+    AabbEnu area = 1;
+    FollowSubscription follow = 2;
+  }
+  repeated string property_keys = 3;
+  repeated string state_keys = 4;
+}
+
+message PropertyValue {
+  oneof value {
+    int64 int64_value = 1;
+    double double_value = 2;
+    bool bool_value = 3;
+    string string_value = 4;
+  }
+}
+
+enum CommandOperation {
+  COMMAND_OPERATION_UNSPECIFIED = 0;
+  SET_PROPERTY = 1;
+  CREATE_OBJECT = 2;
+  DESTROY_OBJECT = 3;
+}
+
+enum CommandStatus {
+  COMMAND_STATUS_UNSPECIFIED = 0;
+  ACCEPTED = 1;
+  APPLIED = 2;
+  REJECTED = 3;
+  DUPLICATE = 4;
+}
+
+message OpenSessionRequest {
+  string credential_token = 1;
+  VersionRange control_versions = 2;
+  VersionRange data_versions = 3;
+  string client_description = 4;
+}
+
+message OpenSessionResponse {
+  string session_id = 1;
+  uint32 control_api_version = 2;
+  uint32 data_schema_version = 3;
+  string stream_ticket = 4;
+  uint64 stream_ticket_ttl_seconds = 5;
+  string data_endpoint = 6;
+  uint64 current_tick = 7;
+  Error error = 8;
+}
+
+message CloseSessionRequest {
+  string session_id = 1;
+}
+
+message CloseSessionResponse {
+  bool closed = 2;
+}
+
+message UpdateSubscriptionRequest {
+  string session_id = 1;
+  Subscription subscription = 2;
+}
+
+message UpdateSubscriptionResponse {
+  bool updated = 1;
+  Error error = 2;
+}
+
+message AcquireOwnershipRequest {
+  string session_id = 1;
+  uint64 target_wid = 2;
+  repeated string property_keys = 3;
+  uint64 lease_until_tick = 4;
+}
+
+message AcquireOwnershipResponse {
+  bool granted = 1;
+  uint64 lease_until_tick = 2;
+  Error error = 3;
+}
+
+message ReleaseOwnershipRequest {
+  string session_id = 1;
+  uint64 target_wid = 2;
+  repeated string property_keys = 3;
+}
+
+message ReleaseOwnershipResponse {
+  bool released = 1;
+}
+
+message SubmitCommandRequest {
+  string session_id = 1;
+  uint64 client_sequence = 2;
+  uint64 target_wid = 3;
+  CommandOperation operation = 4;
+  map<string, PropertyValue> parameters = 5;
+  uint64 expected_object_version = 6;
+  uint64 target_tick_hint = 7;
+}
+
+message SubmitCommandResponse {
+  CommandStatus status = 1;
+  uint64 ingress_sequence = 2;
+  Error error = 3;
+}
+
+message RequestKeyframeRequest {
+  string session_id = 1;
+}
+
+message RequestKeyframeResponse {
+  bool scheduled = 1;
+}
+
+message GetServerInfoRequest {
+}
+
+message GetServerInfoResponse {
+  string build_version = 1;
+  VersionRange supported_control_versions = 2;
+  VersionRange supported_data_versions = 3;
+  uint64 current_tick = 4;
+  repeated string capabilities = 5;
+}

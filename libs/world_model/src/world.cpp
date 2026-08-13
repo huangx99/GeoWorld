@@ -21,10 +21,17 @@ bool World::insert(WorldObject object) {
     if (!object.id.valid() || object.version == 0) {
         return false;
     }
+    object.revision = ++next_revision_;
     return objects_.emplace(object.id, std::move(object)).second;
 }
 
-bool World::erase(WorldId id) { return objects_.erase(id) != 0; }
+bool World::erase(WorldId id) {
+    const bool erased = objects_.erase(id) != 0;
+    if (erased) {
+        ++erase_revision_;
+    }
+    return erased;
+}
 
 WorldObject* World::find(WorldId id) noexcept {
     const auto iterator = objects_.find(id);

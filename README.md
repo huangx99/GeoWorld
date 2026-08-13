@@ -62,6 +62,15 @@ cmake --build --preset vcpkg-m3-release --target geoworld-m3-benchmark
 ./build/vcpkg-m3-release/geoworld-m3-benchmark
 ```
 
+M4 接入层构建（projection 始终启用；protocol/gateway 网络目标由 `GW_BUILD_M4` 控制）：
+
+```bash
+export VCPKG_ROOT=/path/to/vcpkg
+cmake --preset vcpkg-m4
+cmake --build --preset vcpkg-m4
+ctest --preset vcpkg-m4
+```
+
 M3 行为树/HFSM 中文编辑器与 Graphviz 工具链使用独立 preset：
 
 ```bash

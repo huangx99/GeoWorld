@@ -1,0 +1,22 @@
+namespace geoworld.stream.v1;
+
+// GeoWorld M4 客户端数据控制帧（GWCF）。schema 演进只能在末尾追加可选字段。
+
+table AckFrame {
+  stream_epoch:ulong;
+  snapshot_id:ulong;
+}
+
+table KeyframeRequest {
+  reason:string;
+}
+
+union ClientControl { AckFrame, KeyframeRequest }
+
+table ClientStreamFrame {
+  schema_version:uint = 1;
+  control:ClientControl;
+}
+
+root_type ClientStreamFrame;
+file_identifier "GWCF";

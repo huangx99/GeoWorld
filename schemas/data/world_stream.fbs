@@ -1,0 +1,137 @@
+namespace geoworld.stream.v1;
+
+// GeoWorld M4 服务端数据帧（GWSF）。schema 演进只能在末尾追加可选字段。
+// 语义冻结于 docs/M4.md：update 携带完整最新投影，不做字段级 patch。
+
+enum Lifecycle : ubyte { staged = 0, active = 1, suspended = 2, retired = 3 }
+
+enum FrequencyClass : ubyte { on_change = 0, slow = 1, fast = 2 }
+
+enum LeaveReason : ubyte { out_of_area = 0, not_relevant = 1, destroyed = 2, policy_changed = 3 }
+
+enum ReceiptStatus : ubyte { unspecified = 0, accepted = 1, applied = 2, rejected = 3, duplicate = 4 }
+
+enum ReliableKind : ubyte { unspecified = 0, command_receipt = 1, protocol_error = 2, event = 3 }
+
+table Vec3Ecef {
+  x:double;
+  y:double;
+  z:double;
+}
+
+table IntValue {
+  value:int64;
+}
+
+table DoubleValue {
+  value:double;
+}
+
+table BoolValue {
+  value:bool;
+}
+
+table StringValue {
+  value:string;
+}
+
+union PropertyValue { IntValue, DoubleValue, BoolValue, StringValue }
+
+table PropertyEntry {
+  key:string;
+  value:PropertyValue;
+}
+
+table RelationEntry {
+  type:string;
+  target_wid:ulong;
+}
+
+table ProjectedEntity {
+  wid:ulong;
+  fid:uint;
+  version:ulong;
+  position:Vec3Ecef;
+  semantic_type:string;
+  geometry_ref:string;
+  lifecycle:Lifecycle;
+  properties:[PropertyEntry];
+  state:[PropertyEntry];
+  relations:[RelationEntry];
+  capabilities:[string];
+  frequency:FrequencyClass;
+  priority:uint;
+  visibility_tags:[string];
+}
+
+table EntityEnter {
+  wid:ulong;
+  fid:uint;
+  entity:ProjectedEntity;
+}
+
+table EntityUpdate {
+  wid:ulong;
+  fid:uint;
+  entity:ProjectedEntity;
+}
+
+table EntityLeave {
+  wid:ulong;
+  fid:uint;
+  reason:LeaveReason;
+}
+
+table KeyframeFrame {
+  stream_epoch:ulong;
+  stream_sequence:ulong;
+  snapshot_id:ulong;
+  baseline_snapshot_id:ulong;
+  tick:ulong;
+  simulation_time_us:long;
+  entities:[EntityEnter];
+}
+
+table DeltaFrame {
+  stream_epoch:ulong;
+  stream_sequence:ulong;
+  snapshot_id:ulong;
+  baseline_snapshot_id:ulong;
+  tick:ulong;
+  simulation_time_us:long;
+  enters:[EntityEnter];
+  updates:[EntityUpdate];
+  leaves:[EntityLeave];
+}
+
+table CommandReceipt {
+  client_sequence:ulong;
+  status:ReceiptStatus;
+  error_code:string;
+}
+
+table ProtocolError {
+  code:string;
+  message:string;
+}
+
+table ReliableEvent {
+  kind:ReliableKind;
+  receipt:CommandReceipt;
+  error:ProtocolError;
+}
+
+table HeartbeatFrame {
+  server_tick:ulong;
+  latest_snapshot_id:ulong;
+}
+
+union ServerFrame { KeyframeFrame, DeltaFrame, ReliableEvent, HeartbeatFrame }
+
+table WorldStreamFrame {
+  schema_version:uint = 1;
+  frame:ServerFrame;
+}
+
+root_type WorldStreamFrame;
+file_identifier "GWSF";

@@ -19,6 +19,12 @@ std::uint64_t WorldRuntime::submit(std::uint64_t target_tick,
     return commands_.enqueue(target_tick, std::move(payload));
 }
 
+std::uint64_t WorldRuntime::submit(std::uint64_t target_tick,
+                                   simulation::CommandPayload payload,
+                                   simulation::CommandMeta meta) {
+    return commands_.enqueue(target_tick, std::move(payload), meta);
+}
+
 StepResult WorldRuntime::step() {
     const auto processed_tick = static_cast<std::uint64_t>(clock_.tick());
     const auto phase_start = std::chrono::steady_clock::now();
@@ -56,6 +62,9 @@ StepResult WorldRuntime::step() {
         std::chrono::steady_clock::now() - track_c_start).count();
 
     const auto hash = debug::world_state_hash(world_);
+    for (auto& observer : projection_observers_) {
+        observer(world_, processed_tick, hash, spatial_query_);
+    }
     run_phase(TickPhase::projection);
     clock_.advance();
     const auto total_elapsed = input_elapsed + track_a_elapsed + track_b_elapsed + track_c_elapsed;
@@ -84,6 +93,16 @@ void WorldRuntime::add_ai_decision_callback(AiDecisionCallback callback) {
     if (callback) {
         ai_callbacks_.push_back(std::move(callback));
     }
+}
+
+void WorldRuntime::add_projection_observer(ProjectionObserver observer) {
+    if (observer) {
+        projection_observers_.push_back(std::move(observer));
+    }
+}
+
+void WorldRuntime::set_spatial_query(const spatial::SpatialQuery* query) noexcept {
+    spatial_query_ = query;
 }
 
 bool WorldRuntime::activate(foundation::WorldId id) {
