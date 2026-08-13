@@ -19,13 +19,21 @@ struct TransportConfig {
     std::string stream_path{std::string(default_stream_path)};
     // 每连接传输写缓冲上限；满时字节留在核心队列内，由核心按合并/背压规则处理。
     std::size_t max_write_buffer_bytes{4U * 1024U * 1024U};
+    // 数据面 io 分片线程数，显式配置，不从 CPU 核数推导（docs/M4.md §8）。
+    // 1 = 单 io_context 由组合根主线程 poll() 驱动（原行为）；
+    // >1 时每分片一个 io_context + 专属线程，连接按 accept 轮转固定归属。
+    std::uint32_t io_thread_count{1};
     // 非 loopback 监听必须配置 TLS；loopback 允许明文用于测试。
     std::optional<TlsCertificateFiles> tls;
 };
 
-// Beast WebSocket 数据面：单 io_context，不起线程；组合根每个 tick 调用 poll()
-// 驱动 accept/读写回调、从 GatewayCore 取出站字节、关闭 must_disconnect 连接。
-// Boost/Beast/OpenSSL 类型不出现在公共接口。
+// Beast WebSocket 数据面。io_thread_count == 1：单 io_context，不起线程，
+// 组合根每个 tick 调用 poll() 驱动 accept/读写回调、从 GatewayCore 取出站字节、
+// 关闭 must_disconnect 连接。io_thread_count > 1：TCP accept 与 HTTP 升级校验
+// （subprotocol + ticket + 核心 attach）仍在主线程，随后 socket 与升级请求移交
+// 归属分片线程，websocket accept 与帧读写在分片上完成；GatewayCore 保持单线程
+// 语义，跨线程只经加锁 inbox/outbox 传递自有字节缓冲，分片线程不访问核心。
+// TLS 会话始终留在主线程（行为与分片前一致）。Boost/Beast/OpenSSL 类型不出现在公共接口。
 class StreamTransport {
 public:
     StreamTransport(GatewayCore& core, protocol::ProtocolLimits limits,

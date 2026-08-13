@@ -24,6 +24,7 @@
 #include "geoworld/world/world.hpp"
 
 #include "stream_client.hpp"
+#include "thin_client.hpp"
 
 #include <algorithm>
 #include <array>
@@ -89,6 +90,11 @@ constexpr std::uint64_t kDefaultSlowSeconds = 30;
 constexpr std::uint64_t kDefaultSeed = 20'260'812;
 constexpr std::uint64_t kDefaultValidatorConnections = 4;
 constexpr std::uint64_t kDefaultCommandRate = 0;
+// thin 客户端池的默认 io 线程数：少量线程异步承载全部连接，剥离客户端侧
+// decode/replica 的 CPU 开销以隔离服务端扇出能力（A/B 对照 full 模式）。
+constexpr std::uint64_t kDefaultClientThreads = 4;
+// 服务端数据面分片 io 线程数：1 保持单线程原行为，>1 启用连接分片（A/B 对照用）。
+constexpr std::uint64_t kDefaultIoThreads = 4;
 // 命令客户端以 follow 订阅只跟踪自身命令目标：半径只需保证目标可见以维持
 // delta/ack 活性（ack 超时 10 s），同时避免给扇出负载测量引入额外流量。
 constexpr double kCommandFollowRadiusMeters = 1.0;
@@ -118,6 +124,10 @@ constexpr auto kPollSleep = std::chrono::milliseconds{1};
 
 enum class Scenario { memory, memory_slow, loopback, loopback_slow, all };
 
+// full：每连接一个 OS 线程，完整 decode + replica 校验（现有行为）；
+// thin：少量 io 线程异步承载全部连接，只提取 ack 标量不回放 replica。
+enum class ClientMode { full, thin };
+
 struct BenchmarkConfig {
     std::uint64_t entities = kDefaultEntities;
     std::uint64_t connections = kDefaultConnections;
@@ -133,6 +143,9 @@ struct BenchmarkConfig {
     std::uint64_t validators = kDefaultValidatorConnections;
     // 每秒经 gRPC SubmitCommand 提交的 SetProperty 命令数；0 关闭（仅 loopback 生效）。
     std::uint64_t command_rate = kDefaultCommandRate;
+    ClientMode client_mode = ClientMode::full;
+    std::uint64_t client_threads = kDefaultClientThreads;
+    std::uint64_t io_threads = kDefaultIoThreads;
     Scenario scenario = Scenario::all;
 };
 
@@ -154,6 +167,9 @@ void print_usage() {
         "  --seed N                  随机种子 (默认 20260812)\n"
         "  --validators N            解码校验 replica hash 的连接数 (默认 4)\n"
         "  --command-rate N          每秒 gRPC SubmitCommand 命令数 (默认 0=关闭，仅 loopback)\n"
+        "  --client-mode full|thin   loopback 客户端模式 (默认 full；thin 为少量异步线程)\n"
+        "  --client-threads N        thin 模式 io 线程数 (默认 4)\n"
+        "  --io-threads N            服务端数据面分片 io 线程数 (默认 4；1 为单线程原行为)\n"
         "  --help\n";
 }
 
@@ -171,6 +187,7 @@ void print_usage() {
     static constexpr std::string_view kUnknown = "未知参数或缺值，见 --help";
     static constexpr std::string_view kNotNumber = "参数值不是非负整数";
     static constexpr std::string_view kBadScenario = "未知 --scenario 取值";
+    static constexpr std::string_view kBadClientMode = "未知 --client-mode 取值";
     for (int index = 1; index < argc; ++index) {
         const std::string_view key{argv[index]};
         if (key == "--help") {
@@ -197,6 +214,20 @@ void print_usage() {
             }
             continue;
         }
+        if (key == "--client-mode") {
+            if (++index >= argc) {
+                return kUnknown.data();
+            }
+            const std::string_view value{argv[index]};
+            if (value == "full") {
+                config.client_mode = ClientMode::full;
+            } else if (value == "thin") {
+                config.client_mode = ClientMode::thin;
+            } else {
+                return kBadClientMode.data();
+            }
+            continue;
+        }
         std::uint64_t* target = nullptr;
         if (key == "--entities") target = &config.entities;
         else if (key == "--connections") target = &config.connections;
@@ -211,6 +242,8 @@ void print_usage() {
         else if (key == "--seed") target = &config.seed;
         else if (key == "--validators") target = &config.validators;
         else if (key == "--command-rate") target = &config.command_rate;
+        else if (key == "--client-threads") target = &config.client_threads;
+        else if (key == "--io-threads") target = &config.io_threads;
         else return kUnknown.data();
         if (++index >= argc) {
             return kUnknown.data();
@@ -236,6 +269,12 @@ void print_usage() {
     }
     if (config.sample_seconds == 0) {
         return "sample-seconds 必须大于 0";
+    }
+    if (config.client_threads == 0) {
+        return "client-threads 必须大于 0";
+    }
+    if (config.io_threads == 0) {
+        return "io-threads 必须大于 0";
     }
     return nullptr;
 }
@@ -316,6 +355,10 @@ void print_environment(const BenchmarkConfig& config) {
               << "seed=" << config.seed << '\n'
               << "validators=" << config.validators << '\n'
               << "command_rate=" << config.command_rate << '\n'
+              << "client_mode="
+              << (config.client_mode == ClientMode::thin ? "thin" : "full") << '\n'
+              << "client_threads=" << config.client_threads << '\n'
+              << "io_threads=" << config.io_threads << '\n'
               << "world_extent_meters=" << kWorldExtentMeters << '\n';
 }
 
@@ -1326,6 +1369,8 @@ void run_command_client_submitter(CommandClientContext& context,
     Harness harness{config};
     geoworld::gateway::TransportConfig transport_config;
     transport_config.port = 0; // 临时端口，避免与其他进程冲突。
+    transport_config.io_thread_count =
+        static_cast<std::uint32_t>(config.io_threads);
     geoworld::gateway::StreamTransport transport{
         harness.core, geoworld::protocol::ProtocolLimits{}, transport_config};
     std::string diagnostic;
@@ -1370,6 +1415,7 @@ void run_command_client_submitter(CommandClientContext& context,
     };
 
     const std::uint64_t slow_count = slow_connection_count(config, slow_scenario);
+    const bool thin_clients = config.client_mode == ClientMode::thin;
     LoopbackShared shared;
     std::vector<std::unique_ptr<LoopbackClientContext>> contexts;
     contexts.reserve(config.connections);
@@ -1379,16 +1425,30 @@ void run_command_client_submitter(CommandClientContext& context,
         auto context = std::make_unique<LoopbackClientContext>();
         context->index = index;
         context->slow = is_slow_connection(config, slow_count, index);
-        context->validator =
-            index >= config.connections - config.validators && !context->slow;
+        // thin 模式不做 replica hash 校验，validators 仅 full 有效。
+        context->validator = !thin_clients
+            && index >= config.connections - config.validators && !context->slow;
         context->ticket = harness.sessions[index].stream_ticket;
         context->client_config.stream_port = transport.bound_port();
         context->client_config.io_timeout = kClientIoTimeout;
         context->shared = &shared;
         contexts.push_back(std::move(context));
     }
-    for (auto& context : contexts) {
-        threads.emplace_back(run_loopback_client, std::ref(*context));
+    // thin 模式：少量 io 线程异步承载全部连接；连接由主线程逐个发起以保持
+    // ConnectionId 对齐语义，不再每连接一个 OS 线程。
+    std::unique_ptr<geoworld::client::ThinClientPool> thin_pool;
+    if (thin_clients) {
+        geoworld::client::ThinClientPoolConfig thin_config;
+        thin_config.port = transport.bound_port();
+        thin_config.io_threads =
+            static_cast<std::size_t>(config.client_threads);
+        thin_pool = std::make_unique<geoworld::client::ThinClientPool>(
+            thin_config, config.connections);
+        thin_pool->start();
+    } else {
+        for (auto& context : contexts) {
+            threads.emplace_back(run_loopback_client, std::ref(*context));
+        }
     }
 
     // 顺序建连并把 transport 分配的 ConnectionId 对齐到连接下标。
@@ -1449,13 +1509,31 @@ void run_command_client_submitter(CommandClientContext& context,
     bool mapping_failed = false;
     for (std::uint64_t index = 0; index < config.connections; ++index) {
         const auto deadline = std::chrono::steady_clock::now() + kConnectStepTimeout;
-        while (!contexts[index]->connected.load(std::memory_order_acquire)) {
+        if (thin_clients) {
+            thin_pool->async_connect(static_cast<std::size_t>(index),
+                                     contexts[index]->ticket);
+        }
+        const auto connection_ready = [&]() {
+            if (thin_clients) {
+                const geoworld::client::ThinConnectionStats& stats =
+                    thin_pool->stats(static_cast<std::size_t>(index));
+                return stats.established.load(std::memory_order_acquire)
+                    || stats.failed.load(std::memory_order_acquire);
+            }
+            return contexts[index]->connected.load(std::memory_order_acquire);
+        };
+        while (!connection_ready()) {
             poll_transports();
             if (std::chrono::steady_clock::now() > deadline) {
                 mapping_failed = true;
                 break;
             }
             std::this_thread::sleep_for(kPollSleep);
+        }
+        if (thin_clients
+            && thin_pool->stats(static_cast<std::size_t>(index))
+                   .failed.load(std::memory_order_acquire)) {
+            mapping_failed = true;
         }
         const std::size_t expected = active_seen.size() + 1;
         while (transport.active_connections().size() < expected
@@ -1608,11 +1686,26 @@ void run_command_client_submitter(CommandClientContext& context,
             command_shared.recording.store(true, std::memory_order_release);
             if (slow_count > 0) {
                 shared.slow_phase.store(1, std::memory_order_release);
+                if (thin_clients) {
+                    for (std::uint64_t index = 0; index < config.connections;
+                         ++index) {
+                        if (is_slow_connection(config, slow_count, index)) {
+                            thin_pool->pause_reads(static_cast<std::size_t>(index));
+                        }
+                    }
+                }
             }
         }
         if (slow_count > 0 && sampling && tick > warmup_ticks + slow_window_ticks
             && shared.slow_phase.load(std::memory_order_acquire) == 1) {
             shared.slow_phase.store(2, std::memory_order_release);
+            if (thin_clients) {
+                for (std::uint64_t index = 0; index < config.connections; ++index) {
+                    if (is_slow_connection(config, slow_count, index)) {
+                        thin_pool->resume_reads(static_cast<std::size_t>(index));
+                    }
+                }
+            }
         }
 
         authoritative_tick.store(tick, std::memory_order_release);
@@ -1705,6 +1798,9 @@ void run_command_client_submitter(CommandClientContext& context,
     // 收尾：停止推进世界，等待客户端排干后比对最终 replica hash。
     shared.stopping.store(true, std::memory_order_release);
     command_shared.stopping.store(true, std::memory_order_release);
+    if (thin_pool != nullptr) {
+        thin_pool->set_stopping();
+    }
     const auto drain_deadline = std::chrono::steady_clock::now() + kDrainGraceTimeout;
     bool all_final_posted = false;
     while (std::chrono::steady_clock::now() < drain_deadline) {
@@ -1765,9 +1861,32 @@ void run_command_client_submitter(CommandClientContext& context,
             thread.join();
         }
     }
+    if (thin_pool != nullptr) {
+        thin_pool->shutdown();
+    }
 
+    std::uint64_t thin_parse_failures = 0;
     for (std::uint64_t index = 0; index < config.connections; ++index) {
         ConnectionStats& stats = report.connections[index];
+        if (thin_clients) {
+            const geoworld::client::ThinConnectionStats& thin =
+                thin_pool->stats(static_cast<std::size_t>(index));
+            stats.frames = thin.frames.load(std::memory_order_acquire);
+            stats.keyframes = thin.keyframes.load(std::memory_order_acquire);
+            stats.deltas = thin.deltas.load(std::memory_order_acquire);
+            stats.heartbeats = thin.heartbeats.load(std::memory_order_acquire);
+            stats.reliable_events =
+                thin.reliable_events.load(std::memory_order_acquire);
+            stats.acks_sent = thin.acks_sent.load(std::memory_order_acquire);
+            thin_parse_failures +=
+                thin.parse_failures.load(std::memory_order_acquire);
+            if (thin.closed.load(std::memory_order_acquire)
+                && !stats.disconnected) {
+                stats.disconnected = true;
+                stats.disconnect_reason = "transport_closed";
+            }
+            continue;
+        }
         stats.frames = contexts[index]->stats.frames;
         stats.keyframes = contexts[index]->stats.keyframes;
         stats.deltas = contexts[index]->stats.deltas;
@@ -1796,7 +1915,13 @@ void run_command_client_submitter(CommandClientContext& context,
     print_report(slow_scenario ? "loopback-slow" : "loopback", config, report, harness,
                  snapshot);
     std::cout << "loopback_bandwidth_note=bytes-not-observable-via-public-api;"
-                 "see-memory-scenario\n";
+                 "see-memory-scenario\n"
+              << "client_mode=" << (thin_clients ? "thin" : "full") << '\n'
+              << "io_threads=" << config.io_threads << '\n';
+    if (thin_clients) {
+        std::cout << "client_threads=" << config.client_threads << '\n'
+                  << "client_parse_failures_total=" << thin_parse_failures << '\n';
+    }
 
     // 门 8 输出与断言：终态回执不得丢失或重复，合法命令不得有 RPC 失败或 admission 拒绝。
     bool commands_ok = true;
@@ -1844,7 +1969,9 @@ void run_command_client_submitter(CommandClientContext& context,
             commands_ok = false;
         }
     }
-    return report.hash_mismatches == 0 && commands_ok ? 0 : 3;
+    // thin 模式不校验 replica hash（无 validators），但帧解析失败说明链路异常，判失败。
+    const bool clients_ok = thin_parse_failures == 0;
+    return report.hash_mismatches == 0 && commands_ok && clients_ok ? 0 : 3;
 }
 
 } // namespace

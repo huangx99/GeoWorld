@@ -47,6 +47,8 @@ struct DaemonConfig {
     double seed_speed{1.0};
     // 0 表示运行到 SIGINT；否则跑固定 tick 数后退出（便于脚本化验证）。
     std::uint64_t run_ticks{0};
+    // 数据面分片 io 线程数；1 为单线程原行为。
+    std::uint32_t io_threads{1};
     std::string tls_certificate_file;
     std::string tls_private_key_file;
 };
@@ -55,7 +57,7 @@ constexpr std::string_view kUsage =
     "用法: geoworldd [--control-address host] [--control-port port]"
     " [--stream-address host] [--stream-port port]"
     " [--observer-token token] [--admin-token token]"
-    " [--seed-wid id] [--run-ticks n]"
+    " [--seed-wid id] [--run-ticks n] [--io-threads n]"
     " [--tls-cert file] [--tls-key file]";
 
 volatile std::sig_atomic_t g_stop = 0;
@@ -102,6 +104,10 @@ void handle_signal(int) {
             const char* value = take_value();
             if (value == nullptr) { return false; }
             config.run_ticks = std::stoull(value);
+        } else if (flag == "--io-threads") {
+            const char* value = take_value();
+            if (value == nullptr) { return false; }
+            config.io_threads = static_cast<std::uint32_t>(std::stoul(value));
         } else if (flag == "--tls-cert") {
             const char* value = take_value();
             if (value == nullptr) { return false; }
@@ -189,6 +195,7 @@ int run_daemon(const DaemonConfig& config) {
     geoworld::gateway::TransportConfig transport_config;
     transport_config.listen_address = config.stream_address;
     transport_config.port = config.stream_port;
+    transport_config.io_thread_count = config.io_threads;
     if (!config.tls_certificate_file.empty()) {
         geoworld::gateway::TlsCertificateFiles tls{config.tls_certificate_file,
                                                    config.tls_private_key_file};

@@ -226,7 +226,10 @@ void run_client(StreamClientConfig config, SharedState& shared) {
 
 } // namespace
 
-int main() {
+namespace {
+
+// 同一闭环分别跑在单线程（io_thread_count=1）与分片（>1）传输上。
+[[nodiscard]] int run_closed_loop(std::uint32_t io_thread_count) {
     ProjectionConfig projection_config;
     projection_config.enu_origin = geoworld::spatial::geodetic_to_ecef(kOriginGeodetic);
     ProjectionPolicy policy;
@@ -270,6 +273,7 @@ int main() {
     };
     TransportConfig transport_config;
     transport_config.port = 0;
+    transport_config.io_thread_count = io_thread_count;
 
     ControlServer control{core, control_config};
     std::string diagnostic;
@@ -399,6 +403,22 @@ int main() {
     if (shared.stage.load(std::memory_order_acquire) < 5) {
         return 9;
     }
-    std::cout << "m4_stream closed loop passed\n";
+    return 0;
+}
+
+} // namespace
+
+int main() {
+    const int single = run_closed_loop(1);
+    if (single != 0) {
+        std::cerr << "单线程传输闭环失败 code=" << single << '\n';
+        return single;
+    }
+    const int sharded = run_closed_loop(3);
+    if (sharded != 0) {
+        std::cerr << "分片传输闭环失败 code=" << sharded << '\n';
+        return 100 + sharded;
+    }
+    std::cout << "m4_stream closed loop passed (io_thread_count=1,3)\n";
     return 0;
 }

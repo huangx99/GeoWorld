@@ -459,6 +459,7 @@ if(GW_BUILD_M4)
     # 参考客户端共享实现：gw-stream-client 与 m4 集成测试复用。
     add_library(geoworld_stream_client STATIC
         tools/gw-stream-client/stream_client.cpp
+        tools/gw-stream-client/thin_client.cpp
         "${GW_M4_GENERATED_DIR}/geoworld_control.pb.h"
         "${GW_M4_GENERATED_DIR}/geoworld_control.grpc.pb.h"
     )
@@ -473,6 +474,7 @@ if(GW_BUILD_M4)
     target_link_libraries(geoworld_stream_client PRIVATE
         gRPC::grpc++
         protobuf::libprotobuf
+        flatbuffers::flatbuffers
         OpenSSL::SSL
         OpenSSL::Crypto
     )
