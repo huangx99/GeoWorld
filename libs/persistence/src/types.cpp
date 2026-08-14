@@ -68,6 +68,16 @@ const char* error_code(PersistenceError error) noexcept {
         return error_shutting_down.data();
     case PersistenceError::relaxed_not_allowed:
         return error_relaxed_not_allowed.data();
+    case PersistenceError::provider_missing:
+        return error_provider_missing.data();
+    case PersistenceError::provider_unknown:
+        return error_provider_unknown.data();
+    case PersistenceError::provider_version_mismatch:
+        return error_provider_version_mismatch.data();
+    case PersistenceError::checkpoint_invalid:
+        return error_checkpoint_invalid.data();
+    case PersistenceError::checkpoint_incomplete:
+        return error_checkpoint_incomplete.data();
     }
     return "";
 }

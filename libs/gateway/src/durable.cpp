@@ -93,6 +93,20 @@ public:
         return true;
     }
 
+    [[nodiscard]] bool get_i64(std::int64_t& out) {
+        std::uint64_t raw{};
+        if (!get_u64(raw)) return false;
+        out = std::bit_cast<std::int64_t>(raw);
+        return true;
+    }
+
+    [[nodiscard]] bool get_double(double& out) {
+        std::uint64_t raw{};
+        if (!get_u64(raw)) return false;
+        out = std::bit_cast<double>(raw);
+        return true;
+    }
+
     [[nodiscard]] bool get_text(std::string& out) {
         std::uint16_t length = 0;
         if (!get_u16(length) || offset_ + length > data_.size()) {
@@ -113,6 +127,7 @@ public:
     }
 
     [[nodiscard]] std::span<const std::byte> rest() const { return data_.subspan(offset_); }
+    [[nodiscard]] bool at_end() const noexcept { return offset_ == data_.size(); }
 
 private:
     std::span<const std::byte> data_;
@@ -176,6 +191,31 @@ void encode_identity(Encoder& encoder, std::string_view principal_id,
     }
     return decoder.get_fixed(std::span<std::byte>{
         reinterpret_cast<std::byte*>(key.request_id.data()), key.request_id.size()});
+}
+
+[[nodiscard]] bool decode_value(Decoder& decoder, world::PropertyValue& value) {
+    std::uint8_t tag{};
+    if (!decoder.get_u8(tag)) return false;
+    if (tag == kValueTagInt64) {
+        std::int64_t item{};
+        if (!decoder.get_i64(item)) return false;
+        value = item;
+    } else if (tag == kValueTagDouble) {
+        double item{};
+        if (!decoder.get_double(item)) return false;
+        value = item;
+    } else if (tag == kValueTagBool) {
+        std::uint8_t item{};
+        if (!decoder.get_u8(item) || item > 1) return false;
+        value = item != 0;
+    } else if (tag == kValueTagString) {
+        std::string item;
+        if (!decoder.get_text(item)) return false;
+        value = std::move(item);
+    } else {
+        return false;
+    }
+    return true;
 }
 
 } // namespace
@@ -321,6 +361,81 @@ void DurableIdempotencyIndex::erase(const Key& key) { slots_.erase(key); }
     encoder.put_u64(target_tick);
     encoder.put_bytes(make_command_fingerprint(command));
     return encoder.take();
+}
+
+std::optional<RecoveredDurableCommand> decode_external_command_record(
+    std::span<const std::byte> payload) {
+    Decoder decoder{payload};
+    DurableIdempotencyIndex::Key key;
+    RecoveredDurableCommand recovered;
+    std::uint64_t target_wid{};
+    std::uint64_t target_tick_hint{};
+    std::uint8_t operation{};
+    if (!decode_identity(decoder, key) || !decoder.get_u64(recovered.target_tick)
+        || !decoder.get_u64(recovered.client_sequence) || !decoder.get_u64(target_wid)
+        || !decoder.get_u64(recovered.expected_object_version)
+        || !decoder.get_u64(target_tick_hint) || !decoder.get_u8(operation)) {
+        return std::nullopt;
+    }
+    recovered.principal_id = std::move(key.principal_id);
+    recovered.request_id = key.request_id;
+    const foundation::WorldId id{target_wid};
+    if (!id.valid()) return std::nullopt;
+    if (operation == kOperationSetProperty) {
+        simulation::SetPropertyCommand command;
+        command.id = id;
+        if (!decoder.get_text(command.key) || command.key.empty()
+            || !decode_value(decoder, command.value)) return std::nullopt;
+        recovered.payload = std::move(command);
+    } else if (operation == kOperationCreateObject) {
+        world::WorldObject object;
+        object.id = id;
+        std::uint64_t property_count{};
+        if (!decoder.get_text(object.semantic_type) || object.semantic_type.empty()
+            || !decoder.get_text(object.geometry_ref) || !decoder.get_double(object.position.x)
+            || !decoder.get_double(object.position.y) || !decoder.get_double(object.position.z)
+            || !decoder.get_u64(property_count) || property_count > 1'000'000) {
+            return std::nullopt;
+        }
+        for (std::uint64_t index = 0; index < property_count; ++index) {
+            std::string name;
+            world::PropertyValue value;
+            if (!decoder.get_text(name) || name.empty() || !decode_value(decoder, value)
+                || !object.properties.emplace(std::move(name), std::move(value)).second) {
+                return std::nullopt;
+            }
+        }
+        recovered.payload = simulation::CreateObjectCommand{std::move(object)};
+    } else if (operation == kOperationDestroyObject) {
+        recovered.payload = simulation::DestroyObjectCommand{id};
+    } else {
+        return std::nullopt;
+    }
+    if (!decoder.at_end() || target_tick_hint > recovered.target_tick) {
+        return std::nullopt;
+    }
+    return recovered;
+}
+
+std::optional<RecoveredDurableOutcome> decode_command_outcome_record(
+    std::span<const std::byte> payload) {
+    Decoder decoder{payload};
+    DurableIdempotencyIndex::Key key;
+    RecoveredDurableOutcome recovered;
+    std::uint8_t outcome{};
+    std::uint16_t error{};
+    if (!decode_identity(decoder, key) || !decoder.get_u64(recovered.client_sequence)
+        || !decoder.get_u64(recovered.ingress_sequence) || !decoder.get_u8(outcome)
+        || !decoder.get_u16(error) || !decoder.at_end()
+        || (outcome != kOutcomeApplied && outcome != kOutcomeRejected)) {
+        return std::nullopt;
+    }
+    recovered.principal_id = std::move(key.principal_id);
+    recovered.request_id = key.request_id;
+    recovered.applied = outcome == kOutcomeApplied;
+    recovered.error = recovered.applied ? GatewayError::none
+                                        : static_cast<GatewayError>(error);
+    return recovered;
 }
 
 [[nodiscard]] std::vector<std::byte> encode_command_outcome_record(

@@ -222,7 +222,9 @@ private:
     static_cast<void>(engine.acknowledge(ConnectionId{1}, keyframe->snapshot_id));
 
     // 通过可变指针直接改位置（不递增 version），变化检测仍必须产生 update。
-    world.find(WorldId{2})->position = at_enu(25.0, 20.0, 0.0);
+    static_cast<void>(world.update(WorldId{2}, [](auto& object) {
+        object.position = at_enu(25.0, 20.0, 0.0);
+    }));
     engine.on_projection(world, 1, 0);
     const std::optional<StateFrame> second = engine.next_frame(ConnectionId{1});
     const Delta* delta = as_delta(second);
@@ -245,7 +247,9 @@ private:
     }
 
     // 对象离开 AOI 产生 leave；销毁产生 destroyed。
-    world.find(WorldId{1})->position = at_enu(500.0, 500.0, 0.0);
+    static_cast<void>(world.update(WorldId{1}, [](auto& object) {
+        object.position = at_enu(500.0, 500.0, 0.0);
+    }));
     static_cast<void>(world.erase(WorldId{2}));
     engine.on_projection(world, 2, 0);
     const std::optional<StateFrame> third = engine.next_frame(ConnectionId{1});
@@ -473,7 +477,9 @@ private:
     static_cast<void>(engine.acknowledge(ConnectionId{1}, delta->snapshot_id));
 
     // 原始指针位置变化（不递增 version）同样被检测为变化。
-    world.find(WorldId{1})->position = at_enu(15.0, 10.0, 0.0);
+    static_cast<void>(world.update(WorldId{1}, [](auto& object) {
+        object.position = at_enu(15.0, 10.0, 0.0);
+    }));
     engine.on_projection(world, 2, 0);
     const std::optional<StateFrame> moved_delta = drain(ConnectionId{1});
     delta = as_delta(moved_delta);
@@ -485,7 +491,9 @@ private:
 
     // 白名单外字段的原始指针修改（不递增 version/位置）不改变规范化投影，
     // 与全量重算一样不产生任何帧。
-    world.find(WorldId{1})->properties["secret"] = std::int64_t{8};
+    static_cast<void>(world.update(WorldId{1}, [](auto& object) {
+        object.properties["secret"] = std::int64_t{8};
+    }));
     engine.on_projection(world, 3, 0);
     if (drain(ConnectionId{1}).has_value()) {
         return false;
@@ -574,8 +582,10 @@ private:
     for (std::uint64_t tick = 0; tick < kTicks; ++tick) {
         static_cast<void>(world.set_property(
             WorldId{1 + (tick * 37U) % kEntities}, "speed", 12.5 + tick));
-        world.find(WorldId{1 + (tick * 11U) % kEntities})->position =
-            at_enu(static_cast<double>(tick % 10U), 10.0, 0.0);
+        static_cast<void>(world.update(
+            WorldId{1 + (tick * 11U) % kEntities}, [tick](auto& object) {
+                object.position = at_enu(static_cast<double>(tick % 10U), 10.0, 0.0);
+            }));
 
         sequential.on_projection(world, tick, 0);
         parallel.on_projection(world, tick, 0);

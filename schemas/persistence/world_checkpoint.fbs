@@ -1,13 +1,26 @@
 namespace geoworld.persistence.v1;
 
-// GeoWorld M5 权威世界检查点数据块。M5-A 只冻结骨架与格式版本，
-// provider 分块（按稳定 provider ID 排序）在 M5-B 落地时补全。
+// GeoWorld M5 权威世界检查点数据块。schema 演进只能在末尾追加可选字段。
+// 块按稳定 provider ID 排序；相同状态、版本和配置必须产生逐字节一致的
+// 未压缩 payload，CRC32C 针对未压缩字节计算。
+
+table ProviderBlock {
+  provider_id:string;      // 稳定 provider ID
+  schema_version:uint;
+  payload:[ubyte];         // provider 自有确定性编码
+  payload_crc32c:uint;
+}
 
 table WorldCheckpoint {
   format_version:uint = 1;
   world_id:ulong;
+  branch_id:[ubyte];       // 固定 16 字节线格式
   completed_tick:ulong;
-  blocks:[ubyte];         // 占位：M5-B 起为按 provider 排序的编码块
+  resume_tick:ulong;
+  included_lsn:ulong;
+  world_state_hash:ulong;
+  blocks:[ProviderBlock];  // 按稳定 provider ID 升序
+  checkpoint_content_hash:ulong;
 }
 
 root_type WorldCheckpoint;

@@ -34,20 +34,27 @@ struct IntentFlushReport {
     std::size_t deferred{};
 };
 
+struct PendingIntent {
+    std::uint64_t sequence{};
+    std::uint64_t target_tick{};
+    SetPropertyIntent intent;
+};
+
+struct DecisionIntentSnapshot {
+    std::uint64_t next_sequence{1};
+    std::vector<PendingIntent> pending;
+};
+
 class DecisionIntentBuffer {
 public:
     [[nodiscard]] bool submit(std::uint64_t target_tick, SetPropertyIntent intent);
     [[nodiscard]] IntentFlushReport flush(std::uint64_t tick,
                                            simulation::CommandBuffer& commands);
     [[nodiscard]] std::size_t size() const noexcept;
+    [[nodiscard]] DecisionIntentSnapshot snapshot() const;
+    [[nodiscard]] bool restore(DecisionIntentSnapshot snapshot);
 
 private:
-    struct PendingIntent {
-        std::uint64_t sequence{};
-        std::uint64_t target_tick{};
-        SetPropertyIntent intent;
-    };
-
     std::uint64_t next_sequence_{1};
     std::vector<PendingIntent> pending_;
 };

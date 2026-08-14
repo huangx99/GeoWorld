@@ -7,9 +7,14 @@ table ReplayManifest {
   format_version:uint = 1;
   world_id:ulong;
   branch_id:[ubyte];      // 固定 16 字节线格式
-  base_checkpoint:[ubyte];
+  base_checkpoint:string;
   first_lsn:ulong;
   last_lsn:ulong;
+  dt_microseconds:long;
+  schema_registry_fingerprint:string;
+  build_compatibility:string;
+  hash_algorithm_version:uint;
+  side_effects_enabled:bool = false;
 }
 
 root_type ReplayManifest;

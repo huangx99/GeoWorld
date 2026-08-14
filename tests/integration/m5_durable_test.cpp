@@ -531,6 +531,47 @@ void test_ingress_wrap() {
     check(!log->last_appended_kind().has_value(), "g: no wal append before wrap reject");
 }
 
+void test_recovery_decoder() {
+    ExternalCommand command = make_speed_command(SessionId{9}, kUpdatedSpeed);
+    command.expected_object_version = 7;
+    command.target_tick_hint = 12;
+    const auto payload = geoworld::gateway::encode_external_command_record(
+        "principal", *command.request_id, 12, command);
+    const auto decoded = geoworld::gateway::decode_external_command_record(payload);
+    check(decoded.has_value(), "recovery decoder accepted canonical record");
+    if (!decoded.has_value()) return;
+    check(decoded->principal_id == "principal" && decoded->target_tick == 12
+              && decoded->client_sequence == command.client_sequence
+              && decoded->expected_object_version == 7,
+          "recovery decoder metadata");
+    const auto* property =
+        std::get_if<geoworld::simulation::SetPropertyCommand>(&decoded->payload);
+    check(property != nullptr && property->id == command.target_wid
+              && property->key == kWritableProperty
+              && std::get<double>(property->value) == kUpdatedSpeed,
+          "recovery decoder payload");
+    auto truncated = payload;
+    truncated.pop_back();
+    check(!geoworld::gateway::decode_external_command_record(truncated).has_value(),
+          "recovery decoder rejects truncation");
+
+    const auto outcome_payload = geoworld::gateway::encode_command_outcome_record(
+        "principal", *command.request_id, command.client_sequence, 19, true,
+        GatewayError::none);
+    const auto outcome =
+        geoworld::gateway::decode_command_outcome_record(outcome_payload);
+    check(outcome.has_value() && outcome->principal_id == "principal"
+              && outcome->request_id == *command.request_id
+              && outcome->client_sequence == command.client_sequence
+              && outcome->ingress_sequence == 19 && outcome->applied
+              && outcome->error == GatewayError::none,
+          "recovery outcome decoder");
+    auto invalid_outcome = outcome_payload;
+    invalid_outcome[invalid_outcome.size() - 3] = std::byte{2};
+    check(!geoworld::gateway::decode_command_outcome_record(invalid_outcome).has_value(),
+          "recovery outcome decoder rejects state");
+}
+
 } // namespace
 
 int main() {
@@ -540,6 +581,7 @@ int main() {
     test_legacy_path_regression();
     test_submitter_failure();
     test_ingress_wrap();
+    test_recovery_decoder();
     if (g_failed) {
         std::cerr << "m5_durable_test: FAILED\n";
         return 1;

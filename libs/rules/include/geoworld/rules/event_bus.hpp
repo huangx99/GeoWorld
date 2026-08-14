@@ -10,6 +10,11 @@
 
 namespace geoworld::rules {
 
+struct EventBusSnapshot {
+    std::uint64_t next_sequence{1};
+    std::vector<Event> pending;
+};
+
 class EventBus {
 public:
     using Handler = std::function<void(const Event&)>;
@@ -23,6 +28,8 @@ public:
     [[nodiscard]] std::vector<Event> drain(std::uint64_t tick);
     [[nodiscard]] std::size_t dispatch_due(std::uint64_t tick);
     [[nodiscard]] std::size_t size() const noexcept;
+    [[nodiscard]] EventBusSnapshot snapshot() const;
+    [[nodiscard]] bool restore(EventBusSnapshot snapshot);
 
 private:
     struct Subscription {

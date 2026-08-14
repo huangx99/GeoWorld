@@ -18,15 +18,20 @@
 #include "geoworld/runtime/world_runtime.hpp"
 
 #if GW_BUILD_M5
+#include "geoworld/gateway/durable.hpp"
 #include "geoworld/gateway/durable_persistence.hpp"
+#include "geoworld/persistence/checkpoint.hpp"
+#include "geoworld/persistence/recovery.hpp"
 #include "geoworld/persistence/storage.hpp"
 #include "geoworld/persistence/wal.hpp"
 
 #include <filesystem>
+#include <future>
 #include <memory>
 #endif
 
 #include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
@@ -65,6 +70,8 @@ struct DaemonConfig {
     std::uint64_t durable_world_id{1};
     // 分支标识：规范 36 字符形式（8-4-4-4-12 十六进制），默认固定分支便于演示。
     std::string durable_branch{"00000000-0000-0000-0000-000000000001"};
+    std::uint64_t checkpoint_interval_ticks{1'000};
+    std::uint64_t hash_interval_ticks{100};
 };
 
 constexpr std::string_view kUsage =
@@ -73,7 +80,8 @@ constexpr std::string_view kUsage =
     " [--observer-token token] [--admin-token token]"
     " [--seed-wid id] [--run-ticks n] [--io-threads n]"
     " [--tls-cert file] [--tls-key file]"
-    " [--durable-root dir] [--durable-world-id id] [--durable-branch uuid]";
+    " [--durable-root dir] [--durable-world-id id] [--durable-branch uuid]"
+    " [--checkpoint-interval-ticks n] [--hash-interval-ticks n]";
 
 volatile std::sig_atomic_t g_stop = 0;
 
@@ -143,6 +151,14 @@ void handle_signal(int) {
             const char* value = take_value();
             if (value == nullptr) { return false; }
             config.durable_branch = value;
+        } else if (flag == "--checkpoint-interval-ticks") {
+            const char* value = take_value();
+            if (value == nullptr) { return false; }
+            config.checkpoint_interval_ticks = std::stoull(value);
+        } else if (flag == "--hash-interval-ticks") {
+            const char* value = take_value();
+            if (value == nullptr) { return false; }
+            config.hash_interval_ticks = std::stoull(value);
         } else {
             return false;
         }
@@ -160,6 +176,59 @@ void handle_signal(int) {
     }
     return token;
 }
+
+#if GW_BUILD_M5
+void register_runtime_checkpoint_providers(
+    geoworld::persistence::CheckpointRegistry& registry,
+    geoworld::runtime::WorldRuntime& runtime) {
+    static_cast<void>(registry.register_provider(
+        geoworld::persistence::make_world_provider(runtime.world_for_restore())));
+    static_cast<void>(registry.register_provider(
+        geoworld::persistence::make_clock_provider(runtime.clock_for_restore())));
+    static_cast<void>(registry.register_provider(
+        geoworld::persistence::make_command_buffer_provider(runtime.commands_for_restore())));
+    static_cast<void>(registry.register_provider(
+        geoworld::persistence::make_event_bus_provider(runtime.events_for_restore())));
+    static_cast<void>(registry.register_provider(
+        geoworld::persistence::make_ai_intents_provider(runtime.ai_intents_for_restore())));
+    static_cast<void>(registry.register_provider(
+        geoworld::persistence::make_random_streams_provider(runtime.random_streams_for_restore())));
+    static_cast<void>(registry.register_provider(
+        geoworld::persistence::make_artifacts_provider(runtime.artifacts_for_restore())));
+    static_cast<void>(registry.register_provider(
+        geoworld::persistence::make_ecs_active_set_provider(
+            runtime.ecs_for_restore(), runtime.world_for_restore())));
+}
+
+[[nodiscard]] geoworld::gateway::GatewayError recovery_error(
+    geoworld::simulation::CommandRejectReason reason) {
+    switch (reason) {
+    case geoworld::simulation::CommandRejectReason::none:
+        return geoworld::gateway::GatewayError::none;
+    case geoworld::simulation::CommandRejectReason::missing_object:
+        return geoworld::gateway::GatewayError::missing_object;
+    case geoworld::simulation::CommandRejectReason::version_conflict:
+        return geoworld::gateway::GatewayError::version_conflict;
+    case geoworld::simulation::CommandRejectReason::apply_failed:
+        return geoworld::gateway::GatewayError::invalid_request;
+    }
+    return geoworld::gateway::GatewayError::invalid_request;
+}
+
+struct ReplayedDurableCommand {
+    geoworld::gateway::RecoveredDurableCommand command;
+    std::uint64_t external_lsn{};
+    bool outcome_already_persisted{};
+    std::optional<geoworld::simulation::CommandOutcome> outcome;
+};
+
+[[nodiscard]] bool same_durable_request(
+    const geoworld::gateway::RecoveredDurableCommand& command,
+    const geoworld::gateway::RecoveredDurableOutcome& outcome) {
+    return command.principal_id == outcome.principal_id
+           && command.request_id == outcome.request_id;
+}
+#endif
 
 int run_daemon(const DaemonConfig& config) {
     std::string diagnostic;
@@ -198,6 +267,15 @@ int run_daemon(const DaemonConfig& config) {
     authorization->allow_writable_property(config.writable_property);
 
     geoworld::runtime::WorldRuntime runtime;
+#if GW_BUILD_M5
+    geoworld::persistence::CheckpointRegistry checkpoint_registry;
+    std::unique_ptr<geoworld::persistence::CheckpointCoordinator> checkpoint_coordinator;
+    std::future<geoworld::persistence::Result<geoworld::persistence::PublishedCheckpoint>>
+        checkpoint_publish;
+    std::vector<geoworld::persistence::AppendTicket> hash_tickets;
+    bool recovered_existing_state = false;
+    register_runtime_checkpoint_providers(checkpoint_registry, runtime);
+#endif
     geoworld::gateway::GatewayCore core{
         gateway_config, engine, authentication, authorization,
         [] { return std::chrono::steady_clock::now(); }, make_token,
@@ -237,8 +315,130 @@ int run_daemon(const DaemonConfig& config) {
         const geoworld::persistence::DurableLayout layout =
             geoworld::persistence::make_durable_layout(
                 wal_config.durable_root, wal_config.world, wal_config.branch);
-        // 先扫描重建幂等索引再启动 writer；扫描已修剪断电尾部，writer start
-        // 内部的二次扫描看到的是一致状态。
+        geoworld::persistence::RecoveryPlanner planner{
+            layout, wal_config.world, wal_config.branch, file_ops};
+        auto recovery = planner.build();
+        if (!recovery.ok()) {
+            std::cerr << "durable 恢复计划失败: "
+                      << geoworld::persistence::error_code(recovery.error) << '\n';
+            return 5;
+        }
+        if (recovery.value.checkpoint.has_value()) {
+            wal_config.recovery_floor_lsn =
+                recovery.value.checkpoint->info.anchor.included_lsn;
+        }
+        if (recovery.value.checkpoint.has_value()) {
+            geoworld::persistence::CheckpointLoader loader{
+                layout, wal_config.world, wal_config.branch, file_ops};
+            const auto restored = loader.restore_into(
+                checkpoint_registry, *recovery.value.checkpoint);
+            if (restored != geoworld::persistence::PersistenceError::none) {
+                std::cerr << "durable 检查点恢复失败: "
+                          << geoworld::persistence::error_code(restored) << '\n';
+                return 5;
+            }
+            recovered_existing_state = true;
+        }
+
+        std::unordered_map<std::uint64_t, std::uint64_t> recovery_hashes;
+        std::vector<ReplayedDurableCommand> replayed_commands;
+        std::vector<geoworld::gateway::RecoveredDurableOutcome> persisted_outcomes;
+        std::uint64_t replay_until_tick{};
+        bool replay_required = false;
+        for (const auto& record : recovery.value.replay_records) {
+            if (record.kind == geoworld::persistence::WalRecordKind::external_command) {
+                auto command = geoworld::gateway::decode_external_command_record(record.payload);
+                if (!command.has_value()) {
+                    std::cerr << "durable 外部命令解码失败, LSN=" << record.lsn.value << '\n';
+                    return 5;
+                }
+                geoworld::simulation::CommandMeta meta;
+                meta.durable_lsn = record.lsn.value;
+                meta.ingress_sequence = record.lsn.value;
+                meta.expected_object_version = command->expected_object_version;
+                ReplayedDurableCommand replayed;
+                replayed.command = std::move(*command);
+                replayed.external_lsn = record.lsn.value;
+                if (runtime.submit(replayed.command.target_tick,
+                                   std::move(replayed.command.payload), meta) == 0) {
+                    std::cerr << "durable 恢复命令入队失败, LSN=" << record.lsn.value << '\n';
+                    return 5;
+                }
+                replay_until_tick = std::max(replay_until_tick, replayed.command.target_tick);
+                replayed_commands.push_back(std::move(replayed));
+                replay_required = true;
+            } else if (record.kind == geoworld::persistence::WalRecordKind::state_hash) {
+                const auto point = geoworld::persistence::decode_state_hash_point(record.payload);
+                if (!point.has_value()) {
+                    std::cerr << "durable hash 记录损坏, LSN=" << record.lsn.value << '\n';
+                    return 5;
+                }
+                recovery_hashes.insert_or_assign(point->tick, point->hash);
+                replay_until_tick = std::max(replay_until_tick, point->tick);
+                replay_required = true;
+            } else if (record.kind == geoworld::persistence::WalRecordKind::command_outcome) {
+                auto outcome =
+                    geoworld::gateway::decode_command_outcome_record(record.payload);
+                if (!outcome.has_value()) {
+                    std::cerr << "durable 命令终态损坏, LSN=" << record.lsn.value << '\n';
+                    return 5;
+                }
+                persisted_outcomes.push_back(std::move(*outcome));
+            } else if (record.kind
+                              != geoworld::persistence::WalRecordKind::checkpoint_marker) {
+                std::cerr << "durable 恢复缺少该输入类型的处理器, LSN="
+                          << record.lsn.value << " kind="
+                          << static_cast<std::uint16_t>(record.kind) << '\n';
+                return 5;
+            }
+        }
+        recovered_existing_state = recovered_existing_state
+                                   || !recovery.value.replay_records.empty();
+        while (replay_required
+               && static_cast<std::uint64_t>(runtime.clock().tick()) <= replay_until_tick) {
+            const auto step = runtime.step();
+            for (const auto& outcome : step.commands.outcomes) {
+                const auto found = std::find_if(
+                    replayed_commands.begin(), replayed_commands.end(),
+                    [&outcome](const ReplayedDurableCommand& candidate) {
+                        return candidate.external_lsn == outcome.durable_lsn;
+                    });
+                if (found != replayed_commands.end()) {
+                    found->outcome = outcome;
+                }
+            }
+            const auto expected = recovery_hashes.find(step.tick);
+            if (expected != recovery_hashes.end() && expected->second != step.state_hash) {
+                std::cerr << "durable 回放 hash 分叉, tick=" << step.tick
+                          << " expected=" << expected->second
+                          << " actual=" << step.state_hash << '\n';
+                return 5;
+            }
+        }
+        for (auto& command : replayed_commands) {
+            command.outcome_already_persisted = std::any_of(
+                persisted_outcomes.begin(), persisted_outcomes.end(),
+                [&command](const auto& outcome) {
+                    return same_durable_request(command.command, outcome);
+                });
+            if (!command.outcome.has_value()) {
+                std::cerr << "durable 恢复命令缺少执行终态, LSN="
+                          << command.external_lsn << '\n';
+                return 5;
+            }
+        }
+
+        geoworld::persistence::CheckpointConfig checkpoint_config;
+        checkpoint_config.layout = layout;
+        checkpoint_config.world = wal_config.world;
+        checkpoint_config.branch = wal_config.branch;
+        checkpoint_config.authoritative_modules =
+            geoworld::runtime::WorldRuntime::authoritative_state_modules();
+        checkpoint_coordinator =
+            std::make_unique<geoworld::persistence::CheckpointCoordinator>(
+                checkpoint_config, file_ops);
+
+        // 扫描全部 WAL 重建跨重启幂等索引；恢复计划已完成尾部修剪。
         const std::filesystem::path wal_dir = layout.wal_dir();
         if (std::filesystem::exists(wal_dir)) {
             const geoworld::persistence::WalScanResult scan =
@@ -261,8 +461,71 @@ int run_daemon(const DaemonConfig& config) {
                       << geoworld::persistence::error_code(started.error) << '\n';
             return 5;
         }
+        for (const auto& replayed : replayed_commands) {
+            if (replayed.outcome_already_persisted) {
+                continue;
+            }
+            const auto& applied = *replayed.outcome;
+            geoworld::persistence::WalRecord outcome_record;
+            outcome_record.kind = geoworld::persistence::WalRecordKind::command_outcome;
+            outcome_record.target_tick = 0;
+            outcome_record.payload = geoworld::gateway::encode_command_outcome_record(
+                replayed.command.principal_id, replayed.command.request_id,
+                replayed.command.client_sequence, applied.ingress_sequence,
+                applied.applied, recovery_error(applied.reason));
+            auto ticket = durable_writer->append(std::move(outcome_record));
+            if (!ticket.ok()) {
+                std::cerr << "durable 恢复终态写入失败: "
+                          << geoworld::persistence::error_code(ticket.error) << '\n';
+                return 5;
+            }
+            const auto committed = ticket.value.wait();
+            if (!committed.ok()
+                || !core.restore_durable_record(
+                    geoworld::gateway::DurableRecordKind::command_outcome,
+                    committed.lsn.value,
+                    geoworld::gateway::encode_command_outcome_record(
+                        replayed.command.principal_id, replayed.command.request_id,
+                        replayed.command.client_sequence, applied.ingress_sequence,
+                        applied.applied, recovery_error(applied.reason)))) {
+                std::cerr << "durable 恢复终态提交失败\n";
+                return 5;
+            }
+        }
         core.set_durable_log(
             geoworld::gateway::make_persistence_admission_log(durable_writer));
+        runtime.add_checkpoint_anchor_callback(
+            [&checkpoint_registry, &checkpoint_coordinator, &checkpoint_publish,
+             &durable_writer, &config](std::uint64_t completed_tick,
+                                      std::uint64_t state_hash) {
+                if (config.checkpoint_interval_ticks == 0
+                    || (completed_tick + 1) % config.checkpoint_interval_ticks != 0) {
+                    return;
+                }
+                if (checkpoint_publish.valid()
+                    && checkpoint_publish.wait_for(std::chrono::seconds{0})
+                           != std::future_status::ready) {
+                    return;
+                }
+                if (checkpoint_publish.valid() && !checkpoint_publish.get().ok()) {
+                    std::cerr << "后台检查点发布失败\n";
+                }
+                geoworld::persistence::CheckpointAnchor anchor{
+                    completed_tick, completed_tick + 1,
+                    durable_writer->last_durable_lsn(), state_hash};
+                auto captured = checkpoint_coordinator->capture(checkpoint_registry, anchor);
+                if (!captured.ok()) {
+                    std::cerr << "检查点冻结失败: "
+                              << geoworld::persistence::error_code(captured.error) << '\n';
+                    return;
+                }
+                checkpoint_publish = std::async(
+                    std::launch::async,
+                    [&checkpoint_registry, coordinator = checkpoint_coordinator.get(),
+                     state = std::move(captured.value)]() mutable {
+                        return coordinator->publish(checkpoint_registry, std::move(state));
+                    });
+            });
     }
 #endif
 
@@ -308,8 +571,14 @@ int run_daemon(const DaemonConfig& config) {
     seed.semantic_type = "geoworld.demo";
     seed.lifecycle = geoworld::world::LifecycleState::active;
     seed.properties.emplace(config.writable_property, config.seed_speed);
-    static_cast<void>(runtime.submit(
-        0, geoworld::simulation::CreateObjectCommand{seed}));
+#if GW_BUILD_M5
+    if (!recovered_existing_state) {
+#endif
+        static_cast<void>(runtime.submit(
+            0, geoworld::simulation::CreateObjectCommand{seed}));
+#if GW_BUILD_M5
+    }
+#endif
 
     std::signal(SIGINT, handle_signal);
     std::signal(SIGTERM, handle_signal);
@@ -317,7 +586,7 @@ int run_daemon(const DaemonConfig& config) {
     std::cout << "geoworldd: control=" << config.control_address << ":"
               << control.bound_port()
               << " stream=" << config.stream_address << ":" << transport.bound_port()
-              << '\n';
+              << '\n' << std::flush;
 
     // docs/M4.md 4.3.2 主循环：固定 tick 推进 -> 投影观察（step 内部触发）
     // -> 命令终态回执 -> 控制面封送执行 -> gateway pump -> 传输 poll。
@@ -330,6 +599,30 @@ int run_daemon(const DaemonConfig& config) {
                || static_cast<std::uint64_t>(runtime.clock().tick())
                       < config.run_ticks)) {
         const geoworld::runtime::StepResult step = runtime.step();
+#if GW_BUILD_M5
+        if (durable_writer && config.hash_interval_ticks != 0
+            && (step.tick + 1) % config.hash_interval_ticks == 0) {
+            geoworld::persistence::WalRecord hash_record;
+            hash_record.kind = geoworld::persistence::WalRecordKind::state_hash;
+            hash_record.target_tick = step.tick;
+            hash_record.payload = geoworld::persistence::encode_state_hash_point(
+                {step.tick, step.state_hash});
+            auto ticket = durable_writer->append(std::move(hash_record));
+            if (ticket.ok()) {
+                hash_tickets.push_back(std::move(ticket.value));
+            }
+        }
+        std::erase_if(hash_tickets, [](const auto& ticket) {
+            const auto outcome = ticket.wait_for(std::chrono::milliseconds{0});
+            if (!outcome.has_value()) return false;
+            if (!outcome->ok()) {
+                std::cerr << "状态 hash WAL 写入失败: "
+                          << geoworld::persistence::error_code(outcome->error) << '\n';
+                g_stop = 1;
+            }
+            return true;
+        });
+#endif
         core.on_commands_applied(step.commands);
         control.poll();
         // durable WAL 票据完成 -> durable accepted 回执 -> 投递命令缓冲。
@@ -355,10 +648,17 @@ int run_daemon(const DaemonConfig& config) {
     }
 
     std::cout << "geoworldd: shutdown tick=" << runtime.clock().tick()
-              << " objects=" << runtime.world().size() << '\n';
+              << " objects=" << runtime.world().size() << '\n' << std::flush;
     transport.shutdown();
     control.shutdown();
 #if GW_BUILD_M5
+    if (checkpoint_publish.valid()) {
+        const auto published = checkpoint_publish.get();
+        if (!published.ok()) {
+            std::cerr << "后台检查点发布失败: "
+                      << geoworld::persistence::error_code(published.error) << '\n';
+        }
+    }
     // 显式关闭：flush 当前承诺边界，所有已接受 ticket 到达终态。
     if (durable_writer) {
         durable_writer->shutdown();

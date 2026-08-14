@@ -156,6 +156,7 @@ private:
     std::vector<foundation::WorldId> scratch_visible_;
     std::vector<const world::WorldObject*> world_snapshot_;
     std::uint64_t world_snapshot_erase_revision_{};
+    std::uint64_t world_snapshot_storage_revision_{};
     std::vector<const world::WorldObject*> dirty_objects_;
     std::vector<char> dirty_moved_;
     std::vector<std::size_t> dirty_cache_index_;

@@ -23,8 +23,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <cerrno>
 #include <cstdint>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -34,6 +34,11 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 namespace {
 
@@ -67,12 +72,17 @@ constexpr auto kTestDeadline = std::chrono::seconds{90};
 constexpr auto kLoopSleep = std::chrono::milliseconds{1};
 constexpr auto kClientIoTimeout = std::chrono::milliseconds{2'000};
 constexpr auto kGrpcDeadline = std::chrono::seconds{5};
+constexpr auto kConnectionCloseDeadline = std::chrono::seconds{10};
+constexpr auto kDaemonStartupDeadline = std::chrono::seconds{15};
+constexpr auto kDaemonRunDeadline = std::chrono::seconds{40};
+constexpr auto kDaemonStopDeadline = std::chrono::seconds{5};
 constexpr auto kSlowPause = std::chrono::milliseconds{1'000};
 constexpr auto kTicketExpiryWait = std::chrono::milliseconds{1'200};
 constexpr auto kDrainWait = std::chrono::milliseconds{100};
 constexpr int kMaxReadAttempts = 64;
 constexpr int kMaxCatchupReads = 512;
 constexpr std::uint64_t kFloodCommandCount = 40;
+constexpr std::uint64_t kRedactionRunTicks = 600;
 constexpr std::string_view kCredentialToken = "observer-token";
 constexpr std::string_view kWritableProperty = "speed";
 constexpr std::string_view kCanaryToken = "canary-token-4d8f2c";
@@ -272,6 +282,12 @@ void drive_for(DriveContext& context, std::chrono::milliseconds duration) {
     }
 }
 
+void drive_io_once(DriveContext& context) {
+    context.rig.control->poll();
+    context.rig.transport->poll();
+    std::this_thread::sleep_for(kLoopSleep);
+}
+
 [[nodiscard]] bool reasons_contain(const DriveContext& context, GatewayError error) {
     for (const GatewayError reason : context.disconnect_reasons) {
         if (reason == error) {
@@ -386,11 +402,11 @@ void drive_for(DriveContext& context, std::chrono::milliseconds duration) {
     return true;
 }
 
-// 连接被服务器关闭后 read_frame 必须失败；允许先读到若干在途帧
-//（慢客户端场景内核缓冲可积压数百帧，上限必须覆盖 backlog 排空）。
-[[nodiscard]] bool expect_connection_closed(StreamClient& client, ScenarioState& state,
-                                            int max_reads = kMaxReadAttempts) {
-    for (int attempt = 0; attempt < max_reads; ++attempt) {
+// 连接被服务器关闭后 read_frame 必须失败；在墙钟期限内排空任意数量的
+// 在途帧，避免把生产者吞吐差异误当成关闭语义。
+[[nodiscard]] bool expect_connection_closed(StreamClient& client, ScenarioState& state) {
+    const auto deadline = std::chrono::steady_clock::now() + kConnectionCloseDeadline;
+    while (std::chrono::steady_clock::now() < deadline) {
         std::string diagnostic;
         if (!client.read_frame(diagnostic).has_value()) {
             return true;
@@ -692,6 +708,7 @@ void slow_resume_client(StreamClientConfig config, SlowResumeState& state) {
 struct ReliableOverflowState : ScenarioState {
     std::atomic<std::uint64_t> healthy_frames{0};
     std::atomic<bool> stop_healthy{false};
+    std::atomic<int> overflow_stage{0};
 };
 
 void healthy_client(StreamClientConfig config, ReliableOverflowState& state) {
@@ -749,10 +766,19 @@ void reliable_overflow_client(StreamClientConfig config, ReliableOverflowState& 
     if (!send_ack(client, state, keyframe.stream_epoch, keyframe.snapshot_id)) {
         return;
     }
+    state.overflow_stage.store(1, std::memory_order_release);
+    const auto freeze_deadline = std::chrono::steady_clock::now() + kTestDeadline;
+    while (state.overflow_stage.load(std::memory_order_acquire) < 2) {
+        if (std::chrono::steady_clock::now() > freeze_deadline) {
+            fail(state, "等待 tick 边界冻结超时");
+            return;
+        }
+        std::this_thread::sleep_for(kLoopSleep);
+    }
     // 先停读形成堵塞：大帧填满内核与传输写缓冲后，核心队列才开始积压。
     std::this_thread::sleep_for(kSlowPause);
-    // 只发命令不读流：终态回执无法泄出，填满 reliable queue 后服务器必须断开。
-    // 全部命令必须 admission 成功，否则回执洪水的淹没前提不成立。
+    // 冻结 tick 期间只发命令不读流；命令进入同一目标 tick，终态回执在相位
+    // 边界成批产生，确保测试的是 reliable queue 上限而非操作系统缓冲大小。
     std::uint64_t accepted_count = 0;
     for (std::uint64_t sequence = 1; sequence <= kFloodCommandCount; ++sequence) {
         const std::optional<SubmitResult> result = client.submit_set_property(
@@ -770,7 +796,8 @@ void reliable_overflow_client(StreamClientConfig config, ReliableOverflowState& 
         fail(state, "回执洪水命令未全部 accepted");
         return;
     }
-    if (!expect_connection_closed(client, state, kMaxCatchupReads)) {
+    state.overflow_stage.store(3, std::memory_order_release);
+    if (!expect_connection_closed(client, state)) {
         return;
     }
     state.done.store(true, std::memory_order_release);
@@ -868,7 +895,25 @@ void reliable_overflow_client(StreamClientConfig config, ReliableOverflowState& 
                                    std::ref(healthy_state)};
         std::thread slow_thread{reliable_overflow_client, make_client_config(rig),
                                 std::ref(slow_state)};
-        if (!drive_until_done(context, slow_state)) {
+        const auto freeze_deadline = std::chrono::steady_clock::now() + kTestDeadline;
+        while (slow_state.overflow_stage.load(std::memory_order_acquire) < 1
+               && !slow_state.done.load(std::memory_order_acquire)
+               && std::chrono::steady_clock::now() < freeze_deadline) {
+            drive_once(context);
+        }
+        if (!slow_state.done.load(std::memory_order_acquire)) {
+            slow_state.overflow_stage.store(2, std::memory_order_release);
+            while (slow_state.overflow_stage.load(std::memory_order_acquire) < 3
+                   && !slow_state.done.load(std::memory_order_acquire)
+                   && std::chrono::steady_clock::now() < freeze_deadline) {
+                drive_io_once(context);
+            }
+        }
+        if (!slow_state.done.load(std::memory_order_acquire)
+            && slow_state.overflow_stage.load(std::memory_order_acquire) >= 3) {
+            static_cast<void>(drive_until_done(context, slow_state));
+        }
+        if (!slow_state.done.load(std::memory_order_acquire)) {
             fail(slow_state, "reliable 溢出场景超时");
         }
         if (slow_thread.joinable()) {
@@ -1475,6 +1520,74 @@ void tls_client(StreamClientConfig config, TlsState& state) {
 
 #ifdef GW_GEOWORLD_DAEMON_PATH
 
+class DaemonProcess {
+public:
+    DaemonProcess() = default;
+    DaemonProcess(const DaemonProcess&) = delete;
+    DaemonProcess& operator=(const DaemonProcess&) = delete;
+
+    ~DaemonProcess() { stop(); }
+
+    [[nodiscard]] bool start(const std::filesystem::path& log_file) {
+        const pid_t child = ::fork();
+        if (child < 0) {
+            return false;
+        }
+        if (child == 0) {
+            const int log_fd = ::open(log_file.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+            if (log_fd < 0 || ::dup2(log_fd, STDOUT_FILENO) < 0
+                || ::dup2(log_fd, STDERR_FILENO) < 0) {
+                _exit(126);
+            }
+            ::close(log_fd);
+            const std::string run_ticks = std::to_string(kRedactionRunTicks);
+            ::execl(GW_GEOWORLD_DAEMON_PATH, GW_GEOWORLD_DAEMON_PATH,
+                    "--control-port", "0", "--stream-port", "0",
+                    "--observer-token", kCanaryToken.data(), "--run-ticks",
+                    run_ticks.c_str(), static_cast<char*>(nullptr));
+            _exit(127);
+        }
+        pid_ = child;
+        return true;
+    }
+
+    [[nodiscard]] bool wait(std::chrono::seconds timeout) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (std::chrono::steady_clock::now() < deadline) {
+            int status = 0;
+            const pid_t result = ::waitpid(pid_, &status, WNOHANG);
+            if (result == pid_) {
+                pid_ = -1;
+                return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+            }
+            if (result < 0 && errno != EINTR) {
+                pid_ = -1;
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        }
+        return false;
+    }
+
+private:
+    void stop() noexcept {
+        if (pid_ <= 0) {
+            return;
+        }
+        static_cast<void>(::kill(pid_, SIGTERM));
+        if (wait(kDaemonStopDeadline)) {
+            return;
+        }
+        if (pid_ > 0) {
+            static_cast<void>(::kill(pid_, SIGKILL));
+            while (::waitpid(pid_, nullptr, 0) < 0 && errno == EINTR) {}
+            pid_ = -1;
+        }
+    }
+
+    pid_t pid_{-1};
+};
+
 [[nodiscard]] bool wait_log_contains(const std::filesystem::path& log_file,
                                      std::string_view needle,
                                      std::chrono::seconds timeout) {
@@ -1534,25 +1647,19 @@ void tls_client(StreamClientConfig config, TlsState& state) {
     const std::filesystem::path log_file = temp_dir / "geoworldd.log";
     // 临时目录跨运行复用，先清掉上一次可能遗留的日志。
     std::filesystem::remove(log_file);
-    // 守护进程 stdout 重定向到文件后是块缓冲，端口行要等退出才落盘；
-    // stdbuf -o0 关闭缓冲，否则端口发现永远晚于监听。
-    const std::string command = "stdbuf -o0 -e0 \""
-        + std::string{GW_GEOWORLD_DAEMON_PATH}
-        + "\" --control-port 0 --stream-port 0 --observer-token "
-        + std::string{kCanaryToken} + " --run-ticks 600 > \"" + log_file.string()
-        + "\" 2>&1 &";
-    if (std::system(command.c_str()) != 0) {
+    DaemonProcess daemon;
+    if (!daemon.start(log_file)) {
         std::cerr << "scenario_log_redaction: 守护进程启动失败\n";
         return false;
     }
-    if (!wait_log_contains(log_file, "geoworldd: control=", std::chrono::seconds{15})) {
+    if (!wait_log_contains(log_file, "geoworldd: control=", kDaemonStartupDeadline)) {
         std::cerr << "scenario_log_redaction: 守护进程未就绪\n";
         return false;
     }
     std::uint16_t control_port = 0;
     std::uint16_t stream_port = 0;
     if (!wait_bound_ports(log_file, control_port, stream_port,
-                          std::chrono::seconds{15})) {
+                          kDaemonStartupDeadline)) {
         std::cerr << "scenario_log_redaction: 端口解析失败\n";
         return false;
     }
@@ -1604,8 +1711,12 @@ void tls_client(StreamClientConfig config, TlsState& state) {
     static_cast<void>(client.close_session(diagnostic));
 
     if (!wait_log_contains(log_file, "geoworldd: shutdown",
-                           std::chrono::seconds{40})) {
+                           kDaemonRunDeadline)) {
         std::cerr << "scenario_log_redaction: 守护进程未按 run-ticks 退出\n";
+        return false;
+    }
+    if (!daemon.wait(kDaemonStopDeadline)) {
+        std::cerr << "scenario_log_redaction: 守护进程关闭失败\n";
         return false;
     }
     std::ifstream stream{log_file};

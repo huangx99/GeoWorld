@@ -59,6 +59,16 @@ struct WalConfig {
     std::chrono::milliseconds segment_max_age{kDefaultSegmentMaxAge};
     std::size_t max_record_bytes{kDefaultMaxRecordBytes};
     bool allow_relaxed{false};
+    // 仅在已验证检查点覆盖旧 WAL 时设置；允许从该 LSN 之后的首个保留段恢复。
+    Lsn recovery_floor_lsn{};
+};
+
+struct WalWriterMetrics {
+    std::uint64_t group_commit_batches{};
+    std::uint64_t records_written{};
+    std::vector<std::uint64_t> group_commit_nanoseconds;
+    std::vector<std::uint64_t> sync_nanoseconds;
+    std::vector<std::uint64_t> rotation_nanoseconds;
 };
 
 // 单 writer WAL：LSN 唯一分配、有界队列、组提交、segment rotation、只读故障态。
@@ -77,6 +87,7 @@ public:
     [[nodiscard]] Result<AppendTicket> append(WalRecord record) override;
     [[nodiscard]] Lsn last_durable_lsn() const noexcept override;
     [[nodiscard]] bool faulted() const noexcept override;
+    [[nodiscard]] WalWriterMetrics metrics() const;
     void shutdown() override;
 
 private:
@@ -109,7 +120,10 @@ struct WalScanResult {
     PersistenceError error{PersistenceError::none};
     CorruptionReport corruption{};
     std::uint64_t trimmed_bytes{};
+    // first_lsn 是目录中首个保留段的起点；next_lsn 在空活跃段时仍有效。
+    Lsn first_lsn{};
     Lsn last_lsn{};
+    Lsn next_lsn{};
     // 扫描到的活跃 segment（已按策略修剪）；为空表示当前没有活跃段。
     std::filesystem::path active_segment;
 
@@ -118,7 +132,7 @@ struct WalScanResult {
 
 // 连续扫描并校验 LSN 连续性与 CRC；已关闭 segment 或文件中部损坏 fail-closed，
 // 在 corruption 中报告 segment、offset 与期望 LSN。first_expected 用于检查点后的
-// 局部扫描（默认从 kFirstLsn 起）。
+// 局部扫描（默认从 kFirstLsn 起）；first_expected=0 表示从首个保留段自动发现。
 [[nodiscard]] WalScanResult scan_wal_directory(
     const std::filesystem::path& wal_dir, FileOps& ops,
     TailPolicy policy = TailPolicy::trim_active_tail, Lsn first_expected = kFirstLsn,

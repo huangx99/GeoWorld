@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace geoworld::tooling {
 
@@ -24,6 +26,24 @@ struct ArtifactHeader {
 struct ArtifactValidation {
     bool valid{};
     std::string message;
+};
+
+struct ActiveArtifact {
+    std::string logical_name;
+    ArtifactHeader header;
+
+    auto operator<=>(const ActiveArtifact&) const = default;
+};
+
+class ArtifactManifest {
+public:
+    [[nodiscard]] bool activate(ActiveArtifact artifact);
+    [[nodiscard]] bool remove(std::string_view logical_name);
+    [[nodiscard]] std::vector<ActiveArtifact> snapshot() const;
+    [[nodiscard]] bool restore(std::vector<ActiveArtifact> artifacts);
+
+private:
+    std::map<std::string, ArtifactHeader, std::less<>> artifacts_;
 };
 
 [[nodiscard]] std::string source_hash(std::string_view source);

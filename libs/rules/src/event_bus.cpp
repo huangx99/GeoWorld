@@ -65,4 +65,27 @@ std::size_t EventBus::dispatch_due(std::uint64_t tick) {
 
 std::size_t EventBus::size() const noexcept { return pending_.size(); }
 
+EventBusSnapshot EventBus::snapshot() const { return {next_sequence_, pending_}; }
+
+bool EventBus::restore(EventBusSnapshot snapshot) {
+    if (snapshot.next_sequence == 0) {
+        return false;
+    }
+    std::sort(snapshot.pending.begin(), snapshot.pending.end(),
+              [](const Event& left, const Event& right) {
+                  return left.sequence < right.sequence;
+              });
+    std::uint64_t previous{};
+    for (const auto& event : snapshot.pending) {
+        if (event.sequence == 0 || event.sequence >= snapshot.next_sequence
+            || event.sequence == previous || event.type.empty()) {
+            return false;
+        }
+        previous = event.sequence;
+    }
+    next_sequence_ = snapshot.next_sequence;
+    pending_ = std::move(snapshot.pending);
+    return true;
+}
+
 } // namespace geoworld::rules

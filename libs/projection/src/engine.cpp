@@ -116,7 +116,8 @@ void ProjectionEngine::on_projection(const world::World& world, std::uint64_t ti
     // 语义与逐实体全量重算一致（空间查询结果内部排序，扫描顺序不影响输出）。
     const std::uint64_t policy_version = policy_.version();
     if (world_snapshot_.size() != world.size()
-        || world_snapshot_erase_revision_ != world.erase_revision()) {
+        || world_snapshot_erase_revision_ != world.erase_revision()
+        || world_snapshot_storage_revision_ != world.storage_revision()) {
         world_snapshot_.clear();
         world_snapshot_.reserve(world.size());
         world.for_each_object([this](const world::WorldObject& object) {
@@ -127,6 +128,7 @@ void ProjectionEngine::on_projection(const world::World& world, std::uint64_t ti
                 return lhs->id < rhs->id;
             });
         world_snapshot_erase_revision_ = world.erase_revision();
+        world_snapshot_storage_revision_ = world.storage_revision();
     }
     if (scan_cache_dirty_) {
         scan_cache_.clear();

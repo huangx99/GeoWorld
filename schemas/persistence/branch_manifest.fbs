@@ -10,6 +10,9 @@ table BranchManifest {
   parent_branch_id:[ubyte];
   fork_tick:ulong;
   fork_lsn:ulong;
+  base_checkpoint:string;
+  overlay_wal:string;
+  side_effects_enabled:bool = false;
 }
 
 root_type BranchManifest;

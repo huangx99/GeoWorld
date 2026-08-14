@@ -1,16 +1,45 @@
 namespace geoworld.persistence.v1;
 
-// GeoWorld M5 检查点 manifest。M5-A 只冻结骨架字段与格式版本，
-// provider 块列表、随机流与制品清单在 M5-B 落地时按追加演进补全。
+// GeoWorld M5 检查点 manifest。schema 演进只能在末尾追加可选字段。
+// manifest 是检查点的原子提交点：数据块先发布，manifest 最后原子 rename。
+
+table ProviderSchemaEntry {
+  provider_id:string;      // 稳定 provider ID，块按此排序
+  schema_version:uint;     // provider 自有 schema 版本，演进走显式 upcaster
+}
+
+table RandomStreamEntry {
+  stream_name:string;
+  algorithm:string;
+  seed:ulong;
+  position:ulong;
+}
+
+table ArtifactEntry {
+  artifact_id:string;      // 规则/插件/schema/行为制品标识
+  content_hash:ulong;
+  version:uint;
+}
+
+enum Compression : byte { none = 0, zstd = 1 }
 
 table CheckpointManifest {
   format_version:uint = 1;
   world_id:ulong;
-  branch_id:[ubyte];      // 固定 16 字节线格式
+  branch_id:[ubyte];             // 固定 16 字节线格式
   completed_tick:ulong;
   resume_tick:ulong;
-  included_lsn:ulong;
-  state_hash:ulong;
+  included_lsn:ulong;            // 该状态已消费或纳入未来队列的最大 durable LSN
+  world_state_hash:ulong;        // completed_tick 的权威世界状态 hash
+  provider_schemas:[ProviderSchemaEntry];
+  random_streams:[RandomStreamEntry];
+  artifacts:[ArtifactEntry];
+  data_file:string;              // 数据块文件名（相对 checkpoints 目录）
+  data_length:ulong;             // 存储容器长度
+  data_crc32c:uint;              // 存储容器 CRC32C
+  data_uncompressed_length:ulong;
+  compression:Compression = none;
+  checkpoint_content_hash:ulong; // 全部 provider ID、版本和 payload 的确定性 hash
 }
 
 root_type CheckpointManifest;

@@ -188,6 +188,11 @@ public:
         return inner_->list_files(dir);
     }
 
+    geoworld::persistence::Result<std::vector<std::filesystem::path>> list_directories(
+        const std::filesystem::path& dir) override {
+        return inner_->list_directories(dir);
+    }
+
     [[nodiscard]] PersistenceError remove_file(const std::filesystem::path& path) override {
         return inner_->remove_file(path);
     }
@@ -427,7 +432,10 @@ private:
     // 4 条记录合并为一次组提交：只有一次数据 sync。
     const long long syncs = ops->file_syncs.load() - syncs_at_start;
     writer.shutdown();
-    return syncs == 1;
+    const auto metrics = writer.metrics();
+    return syncs == 1 && metrics.group_commit_batches == 1
+           && metrics.records_written == 4 && metrics.group_commit_nanoseconds.size() == 1
+           && metrics.sync_nanoseconds.size() == 1;
 }
 
 [[nodiscard]] bool group_commit_max_bytes_trigger() {
@@ -506,6 +514,7 @@ private:
         }
     }
     writer.shutdown();
+    const auto byte_rotation_metrics = writer.metrics();
     const auto layout =
         geoworld::persistence::make_durable_layout(dir.path, config.world, config.branch);
     int closed = 0;
@@ -519,7 +528,8 @@ private:
         }
     }
     // 每段容纳 2 条记录：5 条记录 -> seg-1、seg-3 关闭，seg-5 活跃。
-    if (closed != 2 || active != 1) {
+    if (closed != 2 || active != 1
+        || byte_rotation_metrics.rotation_nanoseconds.size() != 2) {
         return false;
     }
     if (find_file_with_suffix(layout.wal_dir(), "seg-00000000000000000001.gwal").empty()
@@ -553,6 +563,7 @@ private:
         return false;
     }
     age_writer.shutdown();
+    const auto age_rotation_metrics = age_writer.metrics();
     const auto age_layout = geoworld::persistence::make_durable_layout(
         age_dir.path, age_config.world, age_config.branch);
     int age_segments = 0;
@@ -561,7 +572,7 @@ private:
             ++age_segments;
         }
     }
-    return age_segments == 2;
+    return age_segments == 2 && age_rotation_metrics.rotation_nanoseconds.size() == 1;
 }
 
 [[nodiscard]] bool queue_full_rejected_explicitly() {
@@ -990,6 +1001,43 @@ private:
     return !status.ok() && status.error == PersistenceError::config_invalid;
 }
 
+[[nodiscard]] bool retained_empty_active_segment_resumes_at_filename_lsn() {
+    TempDir dir("empty-active");
+    WalConfig config = make_config(dir.path);
+    config.recovery_floor_lsn = Lsn{4};
+    const auto layout = geoworld::persistence::make_durable_layout(
+        dir.path, config.world, config.branch);
+    const auto ops = geoworld::persistence::make_posix_file_ops();
+    if (ops->create_directories(layout.wal_dir()) != PersistenceError::none) {
+        return false;
+    }
+    const auto active_path = layout.wal_dir()
+                             / (geoworld::persistence::segment_file_name(Lsn{5})
+                                + std::string{geoworld::persistence::kActiveSegmentSuffix});
+    auto empty = ops->create_exclusive(active_path);
+    if (!empty.ok()) {
+        return false;
+    }
+    empty.value.reset();
+
+    WalWriter writer{config, ops};
+    if (!writer.start().ok()) {
+        return false;
+    }
+    auto ticket = writer.append(
+        make_record(WalRecordKind::external_command, 5, payload_of("resume")));
+    if (!ticket.ok()) {
+        return false;
+    }
+    const auto committed = ticket.value.wait();
+    writer.shutdown();
+    const auto scan = geoworld::persistence::scan_wal_directory(
+        layout.wal_dir(), *ops, TailPolicy::strict, Lsn{});
+    return committed.ok() && committed.lsn == Lsn{5} && scan.ok()
+           && scan.first_lsn == Lsn{5} && scan.last_lsn == Lsn{5}
+           && scan.next_lsn == Lsn{6} && scan.records.size() == 1;
+}
+
 } // namespace
 
 int main() {
@@ -1040,6 +1088,9 @@ int main() {
     }
     if (!directory_identity_mismatch_rejected()) {
         return 16;
+    }
+    if (!retained_empty_active_segment_resumes_at_filename_lsn()) {
+        return 17;
     }
     return 0;
 }

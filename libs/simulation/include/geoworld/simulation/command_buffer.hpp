@@ -31,6 +31,8 @@ struct CommandMeta {
     std::uint64_t ingress_sequence{};
     // 乐观并发前置条件；0 表示不检查。
     std::uint64_t expected_object_version{};
+    // 0 表示非 durable 输入；非零值用于检查点证明该 WAL 输入已执行或进入未来队列。
+    std::uint64_t durable_lsn{};
 };
 
 enum class CommandRejectReason {
@@ -45,6 +47,7 @@ struct CommandOutcome {
     std::uint64_t ingress_sequence{};
     bool applied{};
     CommandRejectReason reason{CommandRejectReason::none};
+    std::uint64_t durable_lsn{};
 };
 
 struct Command {
@@ -64,6 +67,12 @@ struct ApplyReport {
 // ingress 序列从 1 开始；0 保留为 enqueue 失败（序列空间回绕耗尽）的返回值。
 inline constexpr std::uint64_t kFirstCommandSequence = 1;
 
+struct CommandBufferSnapshot {
+    std::uint64_t next_sequence{kFirstCommandSequence};
+    std::uint64_t included_durable_lsn{};
+    std::vector<Command> pending;
+};
+
 class CommandBuffer {
 public:
     // first_sequence 仅用于测试注入回绕边界；生产一律默认。
@@ -75,9 +84,12 @@ public:
                                         CommandMeta meta);
     [[nodiscard]] ApplyReport apply(world::World& world, std::uint64_t tick);
     [[nodiscard]] std::size_t size() const noexcept;
+    [[nodiscard]] CommandBufferSnapshot snapshot() const;
+    [[nodiscard]] bool restore(CommandBufferSnapshot snapshot);
 
 private:
     std::uint64_t next_sequence_{kFirstCommandSequence};
+    std::uint64_t included_durable_lsn_{};
     std::vector<Command> pending_;
 };
 

@@ -1,10 +1,12 @@
 #pragma once
 
 #include "geoworld/gateway/types.hpp"
+#include "geoworld/simulation/command_buffer.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -131,6 +133,30 @@ private:
 [[nodiscard]] std::vector<std::byte> encode_external_command_record(
     std::string_view principal_id, const DurableRequestId& request_id,
     std::uint64_t target_tick, const ExternalCommand& command);
+
+struct RecoveredDurableCommand {
+    std::string principal_id;
+    DurableRequestId request_id{};
+    std::uint64_t target_tick{};
+    std::uint64_t client_sequence{};
+    std::uint64_t expected_object_version{};
+    simulation::CommandPayload payload;
+};
+
+[[nodiscard]] std::optional<RecoveredDurableCommand> decode_external_command_record(
+    std::span<const std::byte> payload);
+
+struct RecoveredDurableOutcome {
+    std::string principal_id;
+    DurableRequestId request_id{};
+    std::uint64_t client_sequence{};
+    std::uint64_t ingress_sequence{};
+    bool applied{};
+    GatewayError error{GatewayError::none};
+};
+
+[[nodiscard]] std::optional<RecoveredDurableOutcome> decode_command_outcome_record(
+    std::span<const std::byte> payload);
 
 // command_outcome 记录载荷：format_version + principal + request_id
 // + client_sequence + ingress_sequence + 终态与拒绝原因。

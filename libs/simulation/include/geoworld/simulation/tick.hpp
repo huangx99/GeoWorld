@@ -17,6 +17,8 @@ public:
     [[nodiscard]] std::int64_t simulation_time_microseconds() const noexcept;
     [[nodiscard]] std::int64_t dt_microseconds() const noexcept;
     void advance() noexcept;
+    // 恢复专用：直接设置下一 tick；dt 由构造配置决定，不在此修改。
+    void restore_tick(std::int64_t tick) noexcept { tick_ = tick; }
 
 private:
     TickConfig config_;

@@ -65,6 +65,10 @@ StepResult WorldRuntime::step() {
     for (auto& observer : projection_observers_) {
         observer(world_, processed_tick, hash, spatial_query_);
     }
+    // 检查点锚点在投影观察之后、clock 推进之前触发：同一稳定边界。
+    for (auto& callback : checkpoint_anchor_callbacks_) {
+        callback(processed_tick, hash);
+    }
     run_phase(TickPhase::projection);
     clock_.advance();
     const auto total_elapsed = input_elapsed + track_a_elapsed + track_b_elapsed + track_c_elapsed;
@@ -99,6 +103,21 @@ void WorldRuntime::add_projection_observer(ProjectionObserver observer) {
     if (observer) {
         projection_observers_.push_back(std::move(observer));
     }
+}
+
+void WorldRuntime::add_checkpoint_anchor_callback(CheckpointAnchorCallback callback) {
+    if (callback) {
+        checkpoint_anchor_callbacks_.push_back(std::move(callback));
+    }
+}
+
+const std::vector<std::string_view>& WorldRuntime::authoritative_state_modules() {
+    // 影响未来演化的有状态模块；任一缺失已注册 provider 时 durable 启动必须失败。
+    static const std::vector<std::string_view> modules{
+        "world", "clock", "command_buffer", "event_bus", "ai_intents", "random_streams",
+        "artifacts", "ecs_active_set",
+    };
+    return modules;
 }
 
 void WorldRuntime::set_spatial_query(const spatial::SpatialQuery* query) noexcept {

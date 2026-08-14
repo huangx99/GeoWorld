@@ -38,7 +38,7 @@
     },
     "m5": {
       "description": "Persistence, WAL and replay dependencies",
-      "dependencies": ["crc32c", "zstd", "mio", "boost-uuid"]
+      "dependencies": ["crc32c", "zstd", "mio", "boost-uuid", "immer"]
     },
     "observability": {
       "description": "Production logging and tracing adapters",

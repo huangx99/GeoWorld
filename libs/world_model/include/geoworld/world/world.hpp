@@ -4,12 +4,16 @@
 #include "geoworld/schema/value.hpp"
 
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace geoworld::world {
+
+class FrozenWorldSnapshot;
 
 using WorldId = foundation::WorldId;
 
@@ -48,29 +52,42 @@ struct WorldObject {
 
 class World {
 public:
+    World();
+    ~World();
+    World(World&&) noexcept;
+    World& operator=(World&&) noexcept;
+    World(const World&) = delete;
+    World& operator=(const World&) = delete;
     [[nodiscard]] bool insert(WorldObject object);
     [[nodiscard]] bool erase(WorldId id);
-    [[nodiscard]] WorldObject* find(WorldId id) noexcept;
     [[nodiscard]] const WorldObject* find(WorldId id) const noexcept;
+    [[nodiscard]] bool update(WorldId id,
+                              const std::function<void(WorldObject&)>& mutation);
     [[nodiscard]] bool set_property(WorldId id, std::string key, PropertyValue value);
     [[nodiscard]] bool add_relation(WorldId source, Relation relation);
     [[nodiscard]] std::vector<WorldObject> snapshot() const;
     // 成功 erase 的累计次数：读侧可据此跳过无删除期间的失效扫描。
     [[nodiscard]] std::uint64_t erase_revision() const noexcept { return erase_revision_; }
+    // insert 已分配到的单调序号；供快照恢复还原。
+    [[nodiscard]] std::uint64_t next_revision() const noexcept { return next_revision_; }
+    // COW 导致对象地址变化时递增；仅供缓存裸指针的读侧刷新索引。
+    [[nodiscard]] std::uint64_t storage_revision() const noexcept;
+    // 恢复专用：整体替换世界内容与单调计数器，不经过 insert 的序号分配。
+    void restore(std::vector<WorldObject> objects, std::uint64_t next_revision,
+                 std::uint64_t erase_revision);
     // 免拷贝只读遍历；迭代顺序未定义，调用方不得依赖顺序。
-    template <typename Callback>
-    void for_each_object(Callback&& callback) const {
-        for (const auto& [id, object] : objects_) {
-            static_cast<void>(id);
-            callback(object);
-        }
-    }
+    void for_each_object(const std::function<void(const WorldObject&)>& callback) const;
     [[nodiscard]] std::size_t size() const noexcept;
 
 private:
-    std::unordered_map<WorldId, WorldObject, foundation::WorldIdHash> objects_;
+    [[nodiscard]] WorldObject* writable_find(WorldId id) noexcept;
+
+    struct Storage;
+    std::unique_ptr<Storage> storage_;
     std::uint64_t next_revision_{};
     std::uint64_t erase_revision_{};
+
+    friend FrozenWorldSnapshot freeze_snapshot(const World& world);
 };
 
 } // namespace geoworld::world

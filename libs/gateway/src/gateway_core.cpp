@@ -409,6 +409,7 @@ void GatewayCore::poll_durable_tickets() {
         // durable 承诺达成后投递命令缓冲；入队失败转终态拒绝（不得静默丢弃）。
         simulation::CommandMeta meta;
         meta.ingress_sequence = pending.ingress_sequence;
+        meta.durable_lsn = outcome.lsn;
         meta.expected_object_version = pending.expected_object_version;
         if (!submitter_
             || submitter_(pending.target_tick, std::move(pending.payload), meta) == 0) {

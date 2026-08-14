@@ -20,6 +20,7 @@ std::uint64_t CommandBuffer::enqueue(std::uint64_t target_tick, CommandPayload p
         return 0;
     }
     const auto sequence = next_sequence_++;
+    included_durable_lsn_ = std::max(included_durable_lsn_, meta.durable_lsn);
     pending_.push_back(Command{sequence, target_tick, std::move(payload), meta});
     return sequence;
 }
@@ -71,7 +72,8 @@ ApplyReport CommandBuffer::apply(world::World& world, std::uint64_t tick) {
 
         applied ? ++report.applied : ++report.rejected;
         report.outcomes.push_back(CommandOutcome{
-            command.sequence, command.meta.ingress_sequence, applied, reason});
+            command.sequence, command.meta.ingress_sequence, applied, reason,
+            command.meta.durable_lsn});
     }
 
     report.deferred = deferred.size();
@@ -80,5 +82,31 @@ ApplyReport CommandBuffer::apply(world::World& world, std::uint64_t tick) {
 }
 
 std::size_t CommandBuffer::size() const noexcept { return pending_.size(); }
+
+CommandBufferSnapshot CommandBuffer::snapshot() const {
+    return {next_sequence_, included_durable_lsn_, pending_};
+}
+
+bool CommandBuffer::restore(CommandBufferSnapshot snapshot) {
+    if (snapshot.next_sequence == 0) {
+        return false;
+    }
+    std::sort(snapshot.pending.begin(), snapshot.pending.end(),
+              [](const Command& left, const Command& right) {
+                  return left.sequence < right.sequence;
+              });
+    std::uint64_t previous{};
+    for (const auto& command : snapshot.pending) {
+        if (command.sequence == 0 || command.sequence >= snapshot.next_sequence
+            || command.sequence == previous) {
+            return false;
+        }
+        previous = command.sequence;
+    }
+    next_sequence_ = snapshot.next_sequence;
+    included_durable_lsn_ = snapshot.included_durable_lsn;
+    pending_ = std::move(snapshot.pending);
+    return true;
+}
 
 } // namespace geoworld::simulation

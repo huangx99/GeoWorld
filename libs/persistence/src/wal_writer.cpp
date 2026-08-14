@@ -85,6 +85,8 @@ struct WalWriter::Impl {
     std::atomic<bool> lsn_exhausted{false};
     std::atomic<std::uint64_t> last_durable{0};
     std::thread worker;
+    mutable std::mutex metrics_mutex;
+    WalWriterMetrics metrics;
 
     // 以下状态仅 writer 线程访问：LSN 唯一分配与 segment 写入都序列化在该线程。
     std::uint64_t next_lsn_value{kFirstLsn.value};
@@ -132,18 +134,30 @@ struct WalWriter::Impl {
             return {PersistenceError::config_invalid};
         }
         // 启动恢复：修剪最后一个活跃 segment 的断电尾部，恢复 LSN 分配位置。
-        WalScanResult scan =
-            scan_wal_directory(layout.wal_dir(), *ops, TailPolicy::trim_active_tail,
-                               kFirstLsn, config.max_record_bytes);
+        const Lsn first_expected = config.recovery_floor_lsn.valid() ? Lsn{} : kFirstLsn;
+        WalScanResult scan = scan_wal_directory(layout.wal_dir(), *ops,
+                                                TailPolicy::trim_active_tail,
+                                                first_expected, config.max_record_bytes);
         if (!scan.ok()) {
             return {scan.error};
         }
-        if (scan.last_lsn.valid()) {
-            const std::optional<Lsn> next = next_lsn(scan.last_lsn);
-            if (!next.has_value()) {
+        if (config.recovery_floor_lsn.valid()) {
+            const auto after_floor = next_lsn(config.recovery_floor_lsn);
+            if (!after_floor.has_value()) {
                 lsn_exhausted.store(true);
-            } else {
-                next_lsn_value = next->value;
+            } else if (scan.first_lsn.valid()
+                       && scan.first_lsn.value > after_floor->value) {
+                return {PersistenceError::lsn_discontinuity};
+            } else if (!scan.next_lsn.valid()) {
+                scan.next_lsn = *after_floor;
+            }
+        }
+        if (scan.next_lsn.valid()) {
+            next_lsn_value = scan.next_lsn.value;
+        }
+        if (scan.last_lsn.valid()) {
+            if (!scan.next_lsn.valid()) {
+                lsn_exhausted.store(true);
             }
             last_durable.store(scan.last_lsn.value);
         }
@@ -164,7 +178,7 @@ struct WalWriter::Impl {
             if (active_bytes == 0) {
                 // 断电留下的空活跃段：重写头部，首 LSN 与文件名保持一致。
                 const std::vector<std::byte> header =
-                    detail::encode_segment_header(Lsn{next_lsn_value});
+                    detail::encode_segment_header(active_first_lsn);
                 error = active_segment->write(header);
                 if (error != PersistenceError::none) {
                     return {error};
@@ -293,8 +307,11 @@ struct WalWriter::Impl {
     }
 
     [[nodiscard]] PersistenceError rotate_segment(Lsn next_first_lsn) {
+        const auto rotation_started = std::chrono::steady_clock::now();
         // 关闭顺序冻结：sync -> rename 去掉 active 后缀 -> 父目录 sync。
+        const auto sync_started = std::chrono::steady_clock::now();
         PersistenceError error = active_segment->sync();
+        record_sync(std::chrono::steady_clock::now() - sync_started);
         if (error == PersistenceError::none) {
             const std::filesystem::path closed_path =
                 layout.wal_dir()
@@ -308,7 +325,14 @@ struct WalWriter::Impl {
             return error;
         }
         active_segment.reset();
-        return open_new_segment(next_first_lsn);
+        error = open_new_segment(next_first_lsn);
+        if (error == PersistenceError::none) {
+            std::lock_guard lock(metrics_mutex);
+            metrics.rotation_nanoseconds.push_back(static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - rotation_started).count()));
+        }
+        return error;
     }
 
     [[nodiscard]] PersistenceError ensure_segment_for(Lsn lsn, std::uint64_t record_bytes) {
@@ -352,6 +376,7 @@ struct WalWriter::Impl {
             }
             return;
         }
+        const auto batch_started = std::chrono::steady_clock::now();
         std::vector<std::pair<std::shared_ptr<AppendTicket::State>, Lsn>> written;
         written.reserve(batch.size());
         bool any_durable = false;
@@ -386,7 +411,9 @@ struct WalWriter::Impl {
         }
         if (error == PersistenceError::none && any_durable) {
             // fdatasync 成功才完成 durable promise；relaxed 批次不强制 sync。
+            const auto sync_started = std::chrono::steady_clock::now();
             error = active_segment->sync();
+            record_sync(std::chrono::steady_clock::now() - sync_started);
             if (error == PersistenceError::none) {
                 unsynced_writes = false;
             }
@@ -413,6 +440,25 @@ struct WalWriter::Impl {
         if (any_durable) {
             last_durable.store(written.back().second.value);
         }
+        {
+            std::lock_guard lock(metrics_mutex);
+            ++metrics.group_commit_batches;
+            metrics.records_written += written.size();
+            metrics.group_commit_nanoseconds.push_back(static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - batch_started).count()));
+        }
+    }
+
+    void record_sync(std::chrono::steady_clock::duration elapsed) {
+        std::lock_guard lock(metrics_mutex);
+        metrics.sync_nanoseconds.push_back(static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()));
+    }
+
+    [[nodiscard]] WalWriterMetrics metrics_snapshot() const {
+        std::lock_guard lock(metrics_mutex);
+        return metrics;
     }
 };
 
@@ -437,6 +483,10 @@ Lsn WalWriter::last_durable_lsn() const noexcept {
 
 bool WalWriter::faulted() const noexcept {
     return impl_->fault.load();
+}
+
+WalWriterMetrics WalWriter::metrics() const {
+    return impl_->metrics_snapshot();
 }
 
 void WalWriter::shutdown() {

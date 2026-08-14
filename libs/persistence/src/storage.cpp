@@ -186,6 +186,24 @@ public:
         return {std::move(entries), PersistenceError::none};
     }
 
+    Result<std::vector<std::filesystem::path>> list_directories(
+        const std::filesystem::path& dir) override {
+        std::error_code ec;
+        std::vector<std::filesystem::path> entries;
+        for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+            if (entry.is_directory(ec)) {
+                entries.push_back(entry.path());
+            }
+        }
+        if (ec) {
+            if (ec == std::errc::no_such_file_or_directory) {
+                return {{}, PersistenceError::not_found};
+            }
+            return {{}, PersistenceError::io_failure};
+        }
+        return {std::move(entries), PersistenceError::none};
+    }
+
     [[nodiscard]] PersistenceError remove_file(const std::filesystem::path& path) override {
         if (::unlink(path.c_str()) != 0 && errno != ENOENT) {
             return map_errno(errno);

@@ -2,6 +2,7 @@
 
 #include <iomanip>
 #include <sstream>
+#include <utility>
 
 namespace geoworld::tooling {
 
@@ -50,6 +51,46 @@ ArtifactValidation validate(const ArtifactHeader& header, ArtifactKind expected_
         return {false, "artifact compiler version is invalid"};
     }
     return {true, {}};
+}
+
+bool ArtifactManifest::activate(ActiveArtifact artifact) {
+    if (artifact.logical_name.empty() || !artifact.header.valid()) {
+        return false;
+    }
+    artifacts_.insert_or_assign(std::move(artifact.logical_name),
+                                std::move(artifact.header));
+    return true;
+}
+
+bool ArtifactManifest::remove(std::string_view logical_name) {
+    const auto found = artifacts_.find(logical_name);
+    if (found == artifacts_.end()) {
+        return false;
+    }
+    artifacts_.erase(found);
+    return true;
+}
+
+std::vector<ActiveArtifact> ArtifactManifest::snapshot() const {
+    std::vector<ActiveArtifact> result;
+    result.reserve(artifacts_.size());
+    for (const auto& [name, header] : artifacts_) {
+        result.push_back({name, header});
+    }
+    return result;
+}
+
+bool ArtifactManifest::restore(std::vector<ActiveArtifact> artifacts) {
+    std::map<std::string, ArtifactHeader, std::less<>> restored;
+    for (auto& artifact : artifacts) {
+        if (artifact.logical_name.empty() || !artifact.header.valid()
+            || !restored.emplace(std::move(artifact.logical_name),
+                                 std::move(artifact.header)).second) {
+            return false;
+        }
+    }
+    artifacts_ = std::move(restored);
+    return true;
 }
 
 } // namespace geoworld::tooling

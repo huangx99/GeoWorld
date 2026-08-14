@@ -42,6 +42,8 @@ public:
     virtual Result<std::vector<std::byte>> read_file(const std::filesystem::path& path) = 0;
     virtual Result<std::vector<std::filesystem::path>> list_files(
         const std::filesystem::path& dir) = 0;
+    virtual Result<std::vector<std::filesystem::path>> list_directories(
+        const std::filesystem::path& dir) = 0;
     [[nodiscard]] virtual PersistenceError remove_file(const std::filesystem::path& path) = 0;
     [[nodiscard]] virtual PersistenceError create_directories(const std::filesystem::path& dir) = 0;
 };

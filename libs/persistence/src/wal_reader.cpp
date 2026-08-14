@@ -214,18 +214,28 @@ WalScanResult scan_wal_directory(const std::filesystem::path& wal_dir, FileOps& 
         return left.first_lsn < right.first_lsn;
     });
     Lsn expected = first_expected;
+    if (!segments.empty()) {
+        result.first_lsn = segments.front().first_lsn;
+        if (!expected.valid()) {
+            expected = result.first_lsn;
+        }
+    } else if (!expected.valid()) {
+        return result;
+    }
+    const Lsn scan_start = expected;
     for (const SegmentEntry& segment : segments) {
         if (!scan_segment(result, segment, ops, policy, max_record_bytes, expected)) {
             return result;
         }
     }
     const std::optional<Lsn> previous =
-        expected.valid() && expected.value > first_expected.value
+        expected.valid() && expected.value > scan_start.value
             ? std::optional<Lsn>{Lsn{expected.value - 1}}
             : std::nullopt;
     if (previous.has_value()) {
         result.last_lsn = *previous;
     }
+    result.next_lsn = expected;
     return result;
 }
 

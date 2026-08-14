@@ -63,6 +63,7 @@ target_include_directories(geoworld_schema PUBLIC
 )
 
 add_library(geoworld_world_model STATIC
+    libs/world_model/src/snapshot.cpp
     libs/world_model/src/world.cpp
 )
 add_library(geoworld::world_model ALIAS geoworld_world_model)
@@ -323,9 +324,11 @@ if(TARGET geoworld_ecs_runtime)
         geoworld::debug
         geoworld::ecs_runtime
         geoworld::observability
+        geoworld::rules
         geoworld::schema
         geoworld::simulation
         geoworld::spatial
+        geoworld::tooling
         geoworld::world_model
     )
     target_include_directories(geoworld_world_runtime PUBLIC
@@ -359,6 +362,9 @@ if(GW_BUILD_M5)
     find_package(Crc32c CONFIG REQUIRED)
     find_package(zstd CONFIG REQUIRED)
     find_package(mio CONFIG REQUIRED)
+    find_package(Immer CONFIG REQUIRED)
+    target_link_libraries(geoworld_world_model PRIVATE immer)
+    target_compile_definitions(geoworld_world_model PRIVATE GW_WORLD_PERSISTENT_STORAGE=1)
     if(NOT TARGET Boost::headers AND NOT TARGET Boost::boost)
         message(FATAL_ERROR "GW_BUILD_M5 requires Boost headers (boost-uuid)")
     endif()
@@ -391,7 +397,14 @@ if(GW_BUILD_M5)
     )
 
     add_library(geoworld_persistence STATIC
+        libs/persistence/src/branch.cpp
+        libs/persistence/src/checkpoint.cpp
+        libs/persistence/src/checkpoint_codec.cpp
         libs/persistence/src/manifest.cpp
+        libs/persistence/src/provider_world.cpp
+        libs/persistence/src/provider_runtime.cpp
+        libs/persistence/src/recovery.cpp
+        libs/persistence/src/replay.cpp
         libs/persistence/src/storage.cpp
         libs/persistence/src/types.cpp
         libs/persistence/src/wal_codec.cpp
@@ -401,9 +414,17 @@ if(GW_BUILD_M5)
         ${GW_M5_PERSISTENCE_GENERATED}
     )
     add_library(geoworld::persistence ALIAS geoworld_persistence)
+    # world/clock provider 公共工厂签名引用 world_model 与 simulation 类型，故 PUBLIC。
     # CRC32C/zstd/mio/Boost/FlatBuffers 只进入实现层，全部为 PRIVATE。
     target_link_libraries(geoworld_persistence
-        PUBLIC geoworld::foundation
+        PUBLIC
+            geoworld::ai
+            geoworld::ecs_runtime
+            geoworld::foundation
+            geoworld::rules
+            geoworld::simulation
+            geoworld::tooling
+            geoworld::world_model
         PRIVATE
             flatbuffers::flatbuffers
             Crc32c::crc32c
@@ -602,6 +623,16 @@ if(GW_BUILD_APPS)
         add_executable(gw-stream-client tools/gw-stream-client/main.cpp)
         target_link_libraries(gw-stream-client PRIVATE geoworld_stream_client)
     endif()
+    if(TARGET geoworld_persistence AND TARGET geoworld_gateway
+            AND TARGET geoworld_world_runtime)
+        add_executable(gw-replay tools/gw-replay/main.cpp)
+        target_link_libraries(gw-replay PRIVATE
+            geoworld::debug
+            geoworld::gateway
+            geoworld::persistence
+            geoworld::world_runtime)
+        target_compile_options(gw-replay PRIVATE -Wall -Wextra)
+    endif()
 
     add_executable(geoworld-replay apps/geoworld-replay/main.cpp)
     target_link_libraries(geoworld-replay PRIVATE geoworld::simulation)
@@ -688,6 +719,18 @@ if(GW_BUILD_BENCHMARKS)
         )
         unset(bench_dep_definitions)
         unset(bench_dep_value)
+    endif()
+    if(TARGET geoworld_persistence AND TARGET geoworld_world_runtime)
+        add_executable(geoworld-m5-persistence-benchmark
+            benchmarks/m5_persistence_benchmark.cpp)
+        target_link_libraries(geoworld-m5-persistence-benchmark PRIVATE
+            geoworld::debug
+            geoworld::persistence
+            geoworld::world_runtime)
+        target_compile_definitions(geoworld-m5-persistence-benchmark PRIVATE
+            GW_BENCH_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+            GW_BENCH_COMPILER="${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}")
+        target_compile_options(geoworld-m5-persistence-benchmark PRIVATE -Wall -Wextra)
     endif()
 endif()
 
@@ -801,6 +844,24 @@ if(GW_BUILD_TESTS)
         target_link_libraries(geoworld-persistence-test PRIVATE geoworld::persistence)
         target_compile_options(geoworld-persistence-test PRIVATE -Wall -Wextra)
         add_test(NAME geoworld.persistence COMMAND geoworld-persistence-test)
+
+        add_executable(geoworld-checkpoint-test tests/unit/checkpoint_test.cpp)
+        target_link_libraries(geoworld-checkpoint-test PRIVATE
+            geoworld::debug
+            geoworld::persistence
+        )
+        target_compile_options(geoworld-checkpoint-test PRIVATE -Wall -Wextra)
+        add_test(NAME geoworld.checkpoint COMMAND geoworld-checkpoint-test)
+
+        add_executable(geoworld-branch-test tests/unit/branch_test.cpp)
+        target_link_libraries(geoworld-branch-test PRIVATE geoworld::persistence)
+        target_compile_options(geoworld-branch-test PRIVATE -Wall -Wextra)
+        add_test(NAME geoworld.branch COMMAND geoworld-branch-test)
+
+        add_executable(geoworld-replay-test tests/unit/replay_test.cpp)
+        target_link_libraries(geoworld-replay-test PRIVATE geoworld::persistence)
+        target_compile_options(geoworld-replay-test PRIVATE -Wall -Wextra)
+        add_test(NAME geoworld.replay COMMAND geoworld-replay-test)
     endif()
 
     if(TARGET geoworld_protocol)
@@ -857,6 +918,30 @@ if(GW_BUILD_TESTS)
         )
         target_compile_options(geoworld-m5-durable-test PRIVATE -Wall -Wextra)
         add_test(NAME geoworld.m5_durable COMMAND geoworld-m5-durable-test)
+    endif()
+
+    # M5-B 检查点端到端：persistence + world_runtime 齐备才注册（不需要网络目标）。
+    if(TARGET geoworld_persistence AND TARGET geoworld_world_runtime)
+        add_executable(geoworld-m5-checkpoint-test tests/integration/m5_checkpoint_test.cpp)
+        target_link_libraries(geoworld-m5-checkpoint-test PRIVATE
+            geoworld::debug
+            geoworld::persistence
+            geoworld::world_runtime
+        )
+        target_compile_options(geoworld-m5-checkpoint-test PRIVATE -Wall -Wextra)
+        add_test(NAME geoworld.m5_checkpoint COMMAND geoworld-m5-checkpoint-test)
+
+        if(TARGET geoworld_gateway)
+            add_executable(geoworld-m5-recovery-test tests/integration/m5_recovery_test.cpp)
+            target_link_libraries(geoworld-m5-recovery-test PRIVATE
+                geoworld::debug
+                geoworld::gateway
+                geoworld::persistence
+                geoworld::world_runtime
+            )
+            target_compile_options(geoworld-m5-recovery-test PRIVATE -Wall -Wextra)
+            add_test(NAME geoworld.m5_recovery COMMAND geoworld-m5-recovery-test)
+        endif()
     endif()
 
     if(TARGET geoworld-showcase)

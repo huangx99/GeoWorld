@@ -93,6 +93,26 @@
         "GW_BUILD_M4": "ON",
         "GW_BUILD_M5": "ON"
       }
+    },
+    {
+      "name": "vcpkg-m5-release",
+      "inherits": "vcpkg-m5",
+      "binaryDir": "${sourceDir}/build/vcpkg-m5-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "vcpkg-m5-sanitize",
+      "inherits": "vcpkg-m5",
+      "binaryDir": "${sourceDir}/build/vcpkg-m5-sanitize",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/cmake/triplets",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-sanitize"
+      }
     }
   ],
   "buildPresets": [
@@ -106,6 +126,8 @@
     { "name": "vcpkg-m3-release", "configurePreset": "vcpkg-m3-release" },
     { "name": "vcpkg-m4", "configurePreset": "vcpkg-m4" },
     { "name": "vcpkg-m5", "configurePreset": "vcpkg-m5" }
+    ,{ "name": "vcpkg-m5-release", "configurePreset": "vcpkg-m5-release" },
+    { "name": "vcpkg-m5-sanitize", "configurePreset": "vcpkg-m5-sanitize" }
   ],
   "testPresets": [
     { "name": "default", "configurePreset": "default", "output": { "outputOnFailure": true } },
@@ -116,5 +138,7 @@
     { "name": "vcpkg-m3-tooling", "configurePreset": "vcpkg-m3-tooling", "output": { "outputOnFailure": true } },
     { "name": "vcpkg-m4", "configurePreset": "vcpkg-m4", "output": { "outputOnFailure": true } },
     { "name": "vcpkg-m5", "configurePreset": "vcpkg-m5", "output": { "outputOnFailure": true } }
+    ,{ "name": "vcpkg-m5-release", "configurePreset": "vcpkg-m5-release", "output": { "outputOnFailure": true } },
+    { "name": "vcpkg-m5-sanitize", "configurePreset": "vcpkg-m5-sanitize", "output": { "outputOnFailure": true } }
   ]
 }

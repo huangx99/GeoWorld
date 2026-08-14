@@ -64,6 +64,11 @@ inline constexpr std::string_view error_manifest_invalid = "GWP012";      // man
 inline constexpr std::string_view error_not_found = "GWP013";             // 请求的 segment/manifest 不存在
 inline constexpr std::string_view error_shutting_down = "GWP014";         // writer 正在或已经关闭
 inline constexpr std::string_view error_relaxed_not_allowed = "GWP015";   // relaxed 耐久级别未在配置中显式允许
+inline constexpr std::string_view error_provider_missing = "GWP016";      // 有状态模块未注册捕获/恢复 provider
+inline constexpr std::string_view error_provider_unknown = "GWP017";      // 检查点包含未注册的权威 provider
+inline constexpr std::string_view error_provider_version_mismatch = "GWP018"; // provider schema 版本不兼容且无 upcaster
+inline constexpr std::string_view error_checkpoint_invalid = "GWP019";    // 检查点数据/manifest 校验失败
+inline constexpr std::string_view error_checkpoint_incomplete = "GWP020"; // 已注册 provider 在检查点中缺块
 
 enum class PersistenceError {
     none,
@@ -82,6 +87,11 @@ enum class PersistenceError {
     not_found,
     shutting_down,
     relaxed_not_allowed,
+    provider_missing,
+    provider_unknown,
+    provider_version_mismatch,
+    checkpoint_invalid,
+    checkpoint_incomplete,
 };
 
 [[nodiscard]] const char* error_code(PersistenceError error) noexcept;

@@ -61,4 +61,30 @@ IntentFlushReport DecisionIntentBuffer::flush(std::uint64_t tick,
 
 std::size_t DecisionIntentBuffer::size() const noexcept { return pending_.size(); }
 
+DecisionIntentSnapshot DecisionIntentBuffer::snapshot() const {
+    return {next_sequence_, pending_};
+}
+
+bool DecisionIntentBuffer::restore(DecisionIntentSnapshot snapshot) {
+    if (snapshot.next_sequence == 0) {
+        return false;
+    }
+    std::sort(snapshot.pending.begin(), snapshot.pending.end(),
+              [](const PendingIntent& left, const PendingIntent& right) {
+                  return left.sequence < right.sequence;
+              });
+    std::uint64_t previous{};
+    for (const auto& pending : snapshot.pending) {
+        if (pending.sequence == 0 || pending.sequence >= snapshot.next_sequence
+            || pending.sequence == previous || !pending.intent.target.valid()
+            || pending.intent.key.empty()) {
+            return false;
+        }
+        previous = pending.sequence;
+    }
+    next_sequence_ = snapshot.next_sequence;
+    pending_ = std::move(snapshot.pending);
+    return true;
+}
+
 } // namespace geoworld::ai
