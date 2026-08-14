@@ -22,6 +22,10 @@ enum class GatewayError {
     missing_object,
     tick_out_of_window,
     unsupported_operation,
+    // M5 追加：同一幂等键携带不同命令内容。
+    idempotency_conflict,
+    // M5 追加：durable 接纳不可用（未配置 WAL、队列满或故障态）。
+    durability_unavailable,
 };
 
 [[nodiscard]] const char* error_code(GatewayError error) noexcept;

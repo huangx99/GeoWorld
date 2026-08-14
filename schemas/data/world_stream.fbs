@@ -9,7 +9,7 @@ enum FrequencyClass : ubyte { on_change = 0, slow = 1, fast = 2 }
 
 enum LeaveReason : ubyte { out_of_area = 0, not_relevant = 1, destroyed = 2, policy_changed = 3 }
 
-enum ReceiptStatus : ubyte { unspecified = 0, accepted = 1, applied = 2, rejected = 3, duplicate = 4 }
+enum ReceiptStatus : ubyte { unspecified = 0, accepted = 1, applied = 2, rejected = 3, duplicate = 4, durable_accepted = 5 }
 
 enum ReliableKind : ubyte { unspecified = 0, command_receipt = 1, protocol_error = 2, event = 3 }
 

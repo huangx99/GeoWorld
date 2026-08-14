@@ -31,6 +31,7 @@ enum class ReceiptStatus : std::uint8_t {
     applied = 2,
     rejected = 3,
     duplicate = 4,
+    durable_accepted = 5,
 };
 
 enum class ReliableKind : std::uint8_t {

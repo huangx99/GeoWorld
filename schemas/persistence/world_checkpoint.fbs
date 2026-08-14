@@ -1,0 +1,14 @@
+namespace geoworld.persistence.v1;
+
+// GeoWorld M5 权威世界检查点数据块。M5-A 只冻结骨架与格式版本，
+// provider 分块（按稳定 provider ID 排序）在 M5-B 落地时补全。
+
+table WorldCheckpoint {
+  format_version:uint = 1;
+  world_id:ulong;
+  completed_tick:ulong;
+  blocks:[ubyte];         // 占位：M5-B 起为按 provider 排序的编码块
+}
+
+root_type WorldCheckpoint;
+file_identifier "GWWC";

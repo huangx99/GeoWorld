@@ -4,7 +4,9 @@
 #include "geoworld/projection/connection.hpp"
 #include "geoworld/world/world.hpp"
 
+#include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <variant>
 
@@ -49,6 +51,10 @@ struct DestroyObjectParams {
 
 using CommandParams = std::variant<SetPropertyParams, CreateObjectParams, DestroyObjectParams>;
 
+// M5 durable admission 幂等键：128 位，线格式固定 16 原始字节（与 persistence BranchId 同样式）。
+inline constexpr std::size_t durable_request_id_bytes = 16;
+using DurableRequestId = std::array<std::uint8_t, durable_request_id_bytes>;
+
 struct ExternalCommand {
     SessionId session{};
     std::uint64_t client_sequence{};
@@ -56,9 +62,11 @@ struct ExternalCommand {
     CommandParams params;
     std::uint64_t expected_object_version{};
     std::uint64_t target_tick_hint{};
+    // 缺省走 M4 进程内 (session, client_sequence) 去重；携带时走 durable admission。
+    std::optional<DurableRequestId> request_id;
 };
 
-enum class ReceiptStatus { accepted, applied, rejected, duplicate };
+enum class ReceiptStatus { accepted, applied, rejected, duplicate, durable_accepted };
 
 // 命令终态回执。同一 (session, client_sequence) 重试返回缓存结果。
 struct CommandReceipt {
@@ -66,6 +74,8 @@ struct CommandReceipt {
     GatewayError error{GatewayError::none};
     std::uint64_t client_sequence{};
     std::uint64_t ingress_sequence{};
+    // durable_accepted 时携带 WAL LSN；其余状态为 0。
+    std::uint64_t durable_lsn{};
 };
 
 } // namespace geoworld::gateway

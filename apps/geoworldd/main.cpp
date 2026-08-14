@@ -17,6 +17,15 @@
 #include "geoworld/projection/engine.hpp"
 #include "geoworld/runtime/world_runtime.hpp"
 
+#if GW_BUILD_M5
+#include "geoworld/gateway/durable_persistence.hpp"
+#include "geoworld/persistence/storage.hpp"
+#include "geoworld/persistence/wal.hpp"
+
+#include <filesystem>
+#include <memory>
+#endif
+
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -51,6 +60,11 @@ struct DaemonConfig {
     std::uint32_t io_threads{1};
     std::string tls_certificate_file;
     std::string tls_private_key_file;
+    // M5 durable admission：空表示关闭（M4 原行为）；非空为 durable_root 目录。
+    std::string durable_root;
+    std::uint64_t durable_world_id{1};
+    // 分支标识：规范 36 字符形式（8-4-4-4-12 十六进制），默认固定分支便于演示。
+    std::string durable_branch{"00000000-0000-0000-0000-000000000001"};
 };
 
 constexpr std::string_view kUsage =
@@ -58,7 +72,8 @@ constexpr std::string_view kUsage =
     " [--stream-address host] [--stream-port port]"
     " [--observer-token token] [--admin-token token]"
     " [--seed-wid id] [--run-ticks n] [--io-threads n]"
-    " [--tls-cert file] [--tls-key file]";
+    " [--tls-cert file] [--tls-key file]"
+    " [--durable-root dir] [--durable-world-id id] [--durable-branch uuid]";
 
 volatile std::sig_atomic_t g_stop = 0;
 
@@ -116,6 +131,18 @@ void handle_signal(int) {
             const char* value = take_value();
             if (value == nullptr) { return false; }
             config.tls_private_key_file = value;
+        } else if (flag == "--durable-root") {
+            const char* value = take_value();
+            if (value == nullptr) { return false; }
+            config.durable_root = value;
+        } else if (flag == "--durable-world-id") {
+            const char* value = take_value();
+            if (value == nullptr) { return false; }
+            config.durable_world_id = std::stoull(value);
+        } else if (flag == "--durable-branch") {
+            const char* value = take_value();
+            if (value == nullptr) { return false; }
+            config.durable_branch = value;
         } else {
             return false;
         }
@@ -136,6 +163,16 @@ void handle_signal(int) {
 
 int run_daemon(const DaemonConfig& config) {
     std::string diagnostic;
+
+#if GW_BUILD_M5
+    // durable writer 必须存活到主循环结束；空表示 durable admission 关闭。
+    std::shared_ptr<geoworld::persistence::WalWriter> durable_writer;
+#else
+    if (!config.durable_root.empty()) {
+        std::cerr << "durable admission 未编译（GW_BUILD_M5=OFF），--durable-root 不可用\n";
+        return 2;
+    }
+#endif
 
     geoworld::projection::ProjectionConfig projection_config;
     projection_config.enu_origin =
@@ -182,6 +219,52 @@ int run_daemon(const DaemonConfig& config) {
             static_cast<void>(spatial);
             engine.on_projection(world, tick, state_hash);
         });
+
+#if GW_BUILD_M5
+    if (!config.durable_root.empty()) {
+        const std::optional<geoworld::persistence::BranchId> branch =
+            geoworld::persistence::parse_branch_id(config.durable_branch);
+        if (!branch.has_value()) {
+            std::cerr << "durable 分支标识非法: " << config.durable_branch << '\n';
+            return 2;
+        }
+        geoworld::persistence::WalConfig wal_config;
+        wal_config.durable_root = config.durable_root;
+        wal_config.world = geoworld::foundation::WorldId{config.durable_world_id};
+        wal_config.branch = *branch;
+        const std::shared_ptr<geoworld::persistence::FileOps> file_ops =
+            geoworld::persistence::make_posix_file_ops();
+        const geoworld::persistence::DurableLayout layout =
+            geoworld::persistence::make_durable_layout(
+                wal_config.durable_root, wal_config.world, wal_config.branch);
+        // 先扫描重建幂等索引再启动 writer；扫描已修剪断电尾部，writer start
+        // 内部的二次扫描看到的是一致状态。
+        const std::filesystem::path wal_dir = layout.wal_dir();
+        if (std::filesystem::exists(wal_dir)) {
+            const geoworld::persistence::WalScanResult scan =
+                geoworld::persistence::scan_wal_directory(wal_dir, *file_ops);
+            if (!scan.ok()) {
+                std::cerr << "durable WAL 扫描失败: "
+                          << geoworld::persistence::error_code(scan.error) << '\n';
+                return 5;
+            }
+            if (!geoworld::gateway::restore_durable_index(core, scan)) {
+                std::cerr << "durable 幂等索引重建失败（记录损坏）\n";
+                return 5;
+            }
+        }
+        durable_writer =
+            std::make_shared<geoworld::persistence::WalWriter>(wal_config, file_ops);
+        const geoworld::persistence::Status started = durable_writer->start();
+        if (!started.ok()) {
+            std::cerr << "durable WAL 启动失败: "
+                      << geoworld::persistence::error_code(started.error) << '\n';
+            return 5;
+        }
+        core.set_durable_log(
+            geoworld::gateway::make_persistence_admission_log(durable_writer));
+    }
+#endif
 
     geoworld::gateway::ControlServerConfig control_config;
     control_config.listen_address = config.control_address;
@@ -249,6 +332,8 @@ int run_daemon(const DaemonConfig& config) {
         const geoworld::runtime::StepResult step = runtime.step();
         core.on_commands_applied(step.commands);
         control.poll();
+        // durable WAL 票据完成 -> durable accepted 回执 -> 投递命令缓冲。
+        core.poll_durable_tickets();
         core.pump(step.tick);
         transport.poll();
 
@@ -273,6 +358,12 @@ int run_daemon(const DaemonConfig& config) {
               << " objects=" << runtime.world().size() << '\n';
     transport.shutdown();
     control.shutdown();
+#if GW_BUILD_M5
+    // 显式关闭：flush 当前承诺边界，所有已接受 ticket 到达终态。
+    if (durable_writer) {
+        durable_writer->shutdown();
+    }
+#endif
     return 0;
 }
 

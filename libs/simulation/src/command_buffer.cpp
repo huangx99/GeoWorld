@@ -6,12 +6,19 @@
 
 namespace geoworld::simulation {
 
+CommandBuffer::CommandBuffer(std::uint64_t first_sequence)
+    : next_sequence_(first_sequence) {}
+
 std::uint64_t CommandBuffer::enqueue(std::uint64_t target_tick, CommandPayload payload) {
     return enqueue(target_tick, std::move(payload), CommandMeta{});
 }
 
 std::uint64_t CommandBuffer::enqueue(std::uint64_t target_tick, CommandPayload payload,
                                      CommandMeta meta) {
+    // 序列空间回绕耗尽：0 是失败哨兵，拒绝入队而不是产生重复序列号。
+    if (next_sequence_ == 0) {
+        return 0;
+    }
     const auto sequence = next_sequence_++;
     pending_.push_back(Command{sequence, target_tick, std::move(payload), meta});
     return sequence;

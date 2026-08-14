@@ -61,8 +61,15 @@ struct ApplyReport {
     std::vector<CommandOutcome> outcomes;
 };
 
+// ingress 序列从 1 开始；0 保留为 enqueue 失败（序列空间回绕耗尽）的返回值。
+inline constexpr std::uint64_t kFirstCommandSequence = 1;
+
 class CommandBuffer {
 public:
+    // first_sequence 仅用于测试注入回绕边界；生产一律默认。
+    explicit CommandBuffer(std::uint64_t first_sequence = kFirstCommandSequence);
+
+    // 返回分配的序列号；0 表示序列空间回绕耗尽，命令被拒绝且未入队。
     [[nodiscard]] std::uint64_t enqueue(std::uint64_t target_tick, CommandPayload payload);
     [[nodiscard]] std::uint64_t enqueue(std::uint64_t target_tick, CommandPayload payload,
                                         CommandMeta meta);
@@ -70,7 +77,7 @@ public:
     [[nodiscard]] std::size_t size() const noexcept;
 
 private:
-    std::uint64_t next_sequence_{1};
+    std::uint64_t next_sequence_{kFirstCommandSequence};
     std::vector<Command> pending_;
 };
 

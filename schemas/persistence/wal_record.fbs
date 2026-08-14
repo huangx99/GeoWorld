@@ -1,0 +1,25 @@
+namespace geoworld.persistence.v1;
+
+// GeoWorld M5 WAL 规范化记录 payload。schema 演进只能在末尾追加可选字段。
+// 注意：文件分帧（长度前缀、LSN、CRC32C）由 persistence 实现层承担，
+// FlatBuffers 只负责 payload 内容，不承担 durability 与损坏恢复。
+
+enum WalRecordKind : ushort {
+  external_command = 0,   // Gateway 接纳的外部命令
+  normalized_input = 1,   // IoT/文件导入等非确定性数据源的规范化输入
+  version_switch = 2,     // 规则/插件/schema/配置版本切换
+  random_control = 3,     // 随机流创建/重置等显式控制输入
+  command_outcome = 4,    // 命令终态回执
+  state_hash = 5,         // 周期状态 hash 记录
+  checkpoint_marker = 6,  // 检查点标记
+}
+
+table WalRecordPayload {
+  format_version:uint = 1;
+  kind:WalRecordKind;
+  target_tick:ulong;
+  payload:[ubyte];        // 由各记录类型自有的版本化 schema 决定
+}
+
+root_type WalRecordPayload;
+file_identifier "GWPR";

@@ -2,6 +2,7 @@
 
 #include "geoworld/gateway/auth.hpp"
 #include "geoworld/gateway/config.hpp"
+#include "geoworld/gateway/durable.hpp"
 #include "geoworld/gateway/ownership.hpp"
 #include "geoworld/gateway/queues.hpp"
 #include "geoworld/gateway/session.hpp"
@@ -29,6 +30,9 @@ public:
     using FrameEncoder = std::function<FrameBytes(const projection::StateFrame&)>;
     using ReceiptEncoder = std::function<FrameBytes(const CommandReceipt&)>;
     using HeartbeatEncoder = std::function<FrameBytes(std::uint64_t, std::uint64_t)>;
+    // durable admission 结论回调：恰好调用一次（error + receipt 成对给出）。
+    using DurableCompletion =
+        std::function<void(GatewayError, const CommandReceipt&)>;
 
     struct OpenSessionResult {
         GatewayError error{GatewayError::none};
@@ -45,6 +49,8 @@ public:
     void set_frame_encoder(FrameEncoder encoder);
     void set_receipt_encoder(ReceiptEncoder encoder);
     void set_heartbeat_encoder(HeartbeatEncoder encoder);
+    // 注入 durable 接纳日志（可空）：空时 durable 请求以 GWG206 拒绝，M4 路径不变。
+    void set_durable_log(std::shared_ptr<DurableAdmissionLog> log);
     // 注入共享线程池后，pump 的帧编码按连接并行；输出与串行逐字节一致。
     // 并发边界：注入线程池后编码器会被多线程并发调用，必须线程安全
     // （内置 make_frame_encoder 满足）；engine_.next_frame 与队列写入保持单线程。
@@ -67,6 +73,17 @@ public:
         SessionId id, foundation::WorldId target, const std::vector<std::string>& keys);
     [[nodiscard]] std::pair<GatewayError, CommandReceipt> submit_command(
         SessionId id, const ExternalCommand& command, std::uint64_t current_tick);
+    // durable admission 入口：command.request_id 必须携带。
+    // completion 恰好调用一次：立即结论（校验失败、幂等命中、WAL 立即拒绝）
+    // 在本调用内同步触发；WAL 等待中的结论由 poll_durable_tickets 触发。
+    // 并发边界：与 submit_command 一样只能在主循环线程调用。
+    void submit_durable_command(SessionId id, const ExternalCommand& command,
+                                std::uint64_t current_tick, DurableCompletion completion);
+    // 主循环每个 tick 调用：完成 WAL 票据 -> durable accepted 回执 -> 投递命令缓冲。
+    void poll_durable_tickets();
+    // 重启后由 WAL scan 结果重建持久幂等索引；false 表示记录损坏（fail-closed）。
+    [[nodiscard]] bool restore_durable_record(DurableRecordKind kind, std::uint64_t lsn,
+                                              std::span<const std::byte> payload);
     [[nodiscard]] GatewayError request_keyframe(SessionId id);
 
     // ---- 数据面 ----
@@ -116,8 +133,33 @@ private:
     struct PendingCommand {
         SessionId session;
         std::uint64_t client_sequence{};
+        // durable 命令携带幂等键：on_commands_applied 写 outcome 记录并更新索引。
+        std::optional<DurableIdempotencyIndex::Key> durable_key;
     };
 
+    // admission 校验结论：budget、tick 窗口、权限与 payload 组装（durable 与
+    // 进程内路径共用，保证两条链路的拒绝语义逐字一致）。
+    struct AdmissionDecision {
+        GatewayError error{GatewayError::none};
+        std::uint64_t target_tick{};
+        simulation::CommandPayload payload;
+    };
+
+    struct PendingDurable {
+        DurableIdempotencyIndex::Key key;
+        SessionId session;
+        std::uint64_t client_sequence{};
+        std::uint64_t ingress_sequence{};
+        std::uint64_t target_tick{};
+        std::uint64_t expected_object_version{};
+        simulation::CommandPayload payload;
+        std::unique_ptr<DurableTicket> ticket;
+        DurableCompletion completion;
+    };
+
+    [[nodiscard]] AdmissionDecision check_command_admission(
+        SessionId id, const SessionInfo& info, const ExternalCommand& command,
+        std::uint64_t current_tick);
     [[nodiscard]] ConnectionState* find_connection(projection::ConnectionId connection) noexcept;
     void mark_disconnect(ConnectionState& state, GatewayError reason);
 
@@ -141,6 +183,11 @@ private:
         pending_subscriptions_;
     std::uint64_t last_pump_tick_{};
     std::uint64_t last_pump_keyframe_count_{};
+    std::shared_ptr<DurableAdmissionLog> durable_log_;
+    DurableIdempotencyIndex durable_index_;
+    std::unordered_map<std::uint64_t, PendingDurable> pending_durable_;
+    // outcome 记录票据：写入完成前持有，防止丢失终态持久化承诺。
+    std::vector<std::unique_ptr<DurableTicket>> durable_outcome_tickets_;
     std::shared_ptr<foundation::ThreadPool> thread_pool_;
     std::vector<projection::ConnectionId> pump_order_;
     std::vector<std::optional<projection::StateFrame>> pump_frames_;

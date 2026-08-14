@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GeoWorld 接入层性能实测报告</title>
+<style>
+  :root {
+    --bg: #0d1420;
+    --panel: #16202f;
+    --panel-2: #1c2a3d;
+    --accent: #3fa9f5;
+    --accent-2: #34d399;
+    --warn: #f5b83f;
+    --text: #e8eef6;
+    --muted: #93a4b8;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+    line-height: 1.6;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 48px 24px 64px; }
+  header { text-align: center; margin-bottom: 56px; }
+  header .tag {
+    display: inline-block; padding: 4px 14px; border-radius: 999px;
+    background: rgba(63,169,245,.15); color: var(--accent);
+    font-size: 14px; letter-spacing: 2px; margin-bottom: 18px;
+  }
+  header h1 { font-size: 40px; font-weight: 700; margin-bottom: 14px; }
+  header p { color: var(--muted); font-size: 17px; max-width: 760px; margin: 0 auto; }
+
+  .hero {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px; margin-bottom: 56px;
+  }
+  .card {
+    background: var(--panel); border-radius: 14px; padding: 24px 20px;
+    text-align: center; border: 1px solid rgba(255,255,255,.05);
+  }
+  .card .num { font-size: 38px; font-weight: 700; color: var(--accent); }
+  .card .num.green { color: var(--accent-2); }
+  .card .label { color: var(--muted); font-size: 14px; margin-top: 6px; }
+  .card .sub { color: var(--muted); font-size: 12px; margin-top: 2px; opacity: .75; }
+
+  section { margin-bottom: 56px; }
+  section h2 { font-size: 24px; margin-bottom: 8px; }
+  section .desc { color: var(--muted); font-size: 15px; margin-bottom: 24px; max-width: 820px; }
+  .panel {
+    background: var(--panel); border-radius: 14px; padding: 28px;
+    border: 1px solid rgba(255,255,255,.05);
+  }
+
+  .bar-row { margin-bottom: 22px; }
+  .bar-row .bar-head { display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 6px; }
+  .bar-row .bar-head .v { font-weight: 700; }
+  .bar-track { background: var(--panel-2); border-radius: 8px; height: 30px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 8px; display: flex; align-items: center; padding-left: 12px;
+    font-size: 13px; font-weight: 600; color: #08131f; white-space: nowrap; }
+
+  .flow { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; justify-content: center; }
+  .flow .step {
+    background: var(--panel-2); border-radius: 12px; padding: 16px 18px;
+    text-align: center; flex: 1 1 150px; max-width: 190px; margin: 6px;
+  }
+  .flow .step .t { font-weight: 700; font-size: 15px; margin-bottom: 4px; }
+  .flow .step .d { color: var(--muted); font-size: 12.5px; }
+  .flow .arrow { align-self: center; color: var(--accent); font-size: 22px; margin: 0 2px; }
+
+  .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  .mini { background: var(--panel); border-radius: 14px; padding: 22px; border: 1px solid rgba(255,255,255,.05); }
+  .mini h3 { font-size: 16px; margin-bottom: 10px; color: var(--accent-2); }
+  .mini ul { list-style: none; }
+  .mini li { font-size: 14px; color: var(--text); padding: 5px 0 5px 22px; position: relative; }
+  .mini li::before { content: "✓"; position: absolute; left: 0; color: var(--accent-2); font-weight: 700; }
+
+  .note {
+    background: rgba(245,184,63,.08); border: 1px solid rgba(245,184,63,.25);
+    border-radius: 12px; padding: 16px 20px; font-size: 13.5px; color: var(--muted);
+  }
+  .note b { color: var(--warn); }
+  footer { text-align: center; color: var(--muted); font-size: 12.5px; margin-top: 48px; line-height: 1.9; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="tag">GEOWORLD M4 · 接入层实测</div>
+  <h1>一座十万实体的世界，为 256 位观察者每秒刷新 20 次</h1>
+  <p>以下全部数字来自 GeoWorld 自有可复现基准的正式长跑（持续 10 分钟、12,000 次世界节拍），不是瞬时峰值，也不是第三方转引。</p>
+</header>
+
+<div class="hero">
+  <div class="card"><div class="num">100,000</div><div class="label">权威世界实体</div><div class="sub">同一世界，单一权威</div></div>
+  <div class="card"><div class="num">256</div><div class="label">并发观察者连接</div><div class="sub">视野相互重叠</div></div>
+  <div class="card"><div class="num green">20 Hz</div><div class="label">持续刷新频率</div><div class="sub">10 分钟全程无掉速</div></div>
+  <div class="card"><div class="num green">28.7 ms</div><div class="label">扇出延迟 p99</div><div class="sub">预算 50 ms 以内</div></div>
+  <div class="card"><div class="num">2.8 Gbps</div><div class="label">聚合分发吞吐</div><div class="sub">353 MB/s 持续输出</div></div>
+  <div class="card"><div class="num green">0</div><div class="label">状态不一致</div><div class="sub">322 万帧逐帧哈希校验</div></div>
+</div>
+
+<section>
+  <h2>每个人只看到该看的，带宽省 99.9%</h2>
+  <p class="desc">传统做法是把整个世界原样推给每个客户端；GeoWorld 按视野（AOI）裁剪并只发送变化部分。按相同负载推算，每个观察者所需带宽对比如下：</p>
+  <div class="panel">
+    <div class="bar-row">
+      <div class="bar-head"><span>传统全量同步（推算）</span><span class="v">约 1.26 GB/s</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:100%;background:#e0655f;">每个连接每秒 1.26 GB —— 家用宽带无法承受</div></div>
+    </div>
+    <div class="bar-row" style="margin-bottom:0;">
+      <div class="bar-head"><span>GeoWorld 视野裁剪 + 增量同步（实测）</span><span class="v" style="color:var(--accent-2);">1.32 MB/s</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:22%;background:var(--accent-2);">1.32 MB/s</div></div>
+    </div>
+    <p style="color:var(--muted);font-size:12.5px;margin-top:10px;">条形长度仅为可读性调整，未按比例绘制；实际比例约为 958 : 1。</p>
+  </div>
+</section>
+
+<section>
+  <h2>快，而且稳：10 分钟里的每一次节拍</h2>
+  <p class="desc">从世界状态确定到全部 256 个连接的分发队列就绪，一次扇出的耗时分布。50 ms 是工程预算线，99% 的节拍都在 28.7 ms 内完成：</p>
+  <div class="panel">
+    <div class="bar-row">
+      <div class="bar-head"><span>一半的节拍快于</span><span class="v">23.6 ms</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:47%;background:var(--accent);">p50 · 23.6 ms</div></div>
+    </div>
+    <div class="bar-row">
+      <div class="bar-head"><span>95% 的节拍快于</span><span class="v">26.3 ms</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:53%;background:var(--accent);">p95 · 26.3 ms</div></div>
+    </div>
+    <div class="bar-row">
+      <div class="bar-head"><span>99% 的节拍快于</span><span class="v">28.7 ms</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:57%;background:var(--accent-2);">p99 · 28.7 ms</div></div>
+    </div>
+    <div class="bar-row" style="margin-bottom:0;">
+      <div class="bar-head"><span>工程预算线</span><span class="v">50 ms</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:100%;background:var(--panel-2);color:var(--muted);">50 ms</div></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>一条链路，五道把关</h2>
+  <p class="desc">客户端看到的一切，都经过一条可校验、可恢复的流水线：</p>
+  <div class="flow">
+    <div class="step"><div class="t">权威世界</div><div class="d">10 万实体<br>唯一事实来源</div></div>
+    <div class="arrow">→</div>
+    <div class="step"><div class="t">确定性投影</div><div class="d">按视野与权限裁剪<br>相同输入必得相同结果</div></div>
+    <div class="arrow">→</div>
+    <div class="step"><div class="t">版本化协议</div><div class="d">恶意输入逐字节校验<br>拒绝即断开</div></div>
+    <div class="arrow">→</div>
+    <div class="step"><div class="t">接入网关</div><div class="d">加密传输 · 限速<br>慢客户端隔离</div></div>
+    <div class="arrow">→</div>
+    <div class="step"><div class="t">客户端</div><div class="d">浏览器 / Qt / 原生<br>同一协议制品</div></div>
+  </div>
+</section>
+
+<section>
+  <h2>出状况时，别人不受牵连</h2>
+  <div class="grid-2">
+    <div class="mini">
+      <h3>慢客户端隔离（实测）</h3>
+      <ul>
+        <li>12 个停止响应的连接被按规则自动断开</li>
+        <li>其余 244 个连接延迟仅变化 +17.6%（约束线 20%）</li>
+        <li>断开后资源即刻回收，世界节拍不受任何阻塞</li>
+      </ul>
+    </div>
+    <div class="mini">
+      <h3>长时间运行稳定（实测）</h3>
+      <ul>
+        <li>10 分钟连续运行，内存占用零增长（-0.2%）</li>
+        <li>全部 256 个连接零意外断开</li>
+        <li>断线重连自动全量重同步，恢复后状态哈希一致</li>
+      </ul>
+    </div>
+    <div class="mini">
+      <h3>安全基线（实测）</h3>
+      <ul>
+        <li>TLS 加密：非本机部署强制启用，缺证书拒绝启动</li>
+        <li>一次性入场券：重放、过期一律拒绝</li>
+        <li>畸形帧、超大帧、未授权命令全部实测拦截</li>
+        <li>令牌与业务数据不进入任何日志</li>
+      </ul>
+    </div>
+    <div class="mini">
+      <h3>工程质量（实测）</h3>
+      <ul>
+        <li>21 项自动化测试全数通过（单元 + 端到端）</li>
+        <li>322 万帧逐帧校验，客户端与服务端状态完全一致</li>
+        <li>性能结论全部来自仓库内可复现基准，可随时重跑</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="note">
+    <b>诚实说明：</b>以上数据于 2026-08-13 在一台桌面级开发机（Intel i7-11700，8 物理核，64 GB 内存，Linux）上以 Release 构建测得，负载为 10 万实体 / 256 连接 / 每连接约 2,170 实体可见 / 每节拍 10% 实体变化，正式采样 10 分钟。专用服务器环境预期优于上述数字；控制面命令延迟一项已约定在专用高性能机器上复测并更新记录。基准程序与负载参数随产品源码一并交付，客户可自行复现。
+  </div>
+</section>
+
+<footer>
+  GeoWorld M4 接入层 · 版本化协议 v1（控制面 8 个 RPC · 数据面 GWSF/GWCF）<br>
+  数据来源：仓库 docs/M4.md「当前进度与容量记录」 · 基准：benchmarks/m4_gateway_benchmark.cpp
+</footer>
+
+</div>
+</body>
+</html>

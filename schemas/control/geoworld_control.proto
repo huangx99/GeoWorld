@@ -3,7 +3,8 @@ syntax = "proto3";
 package geoworld.control.v1;
 
 // GeoWorld M4 控制面。只承载低频请求-响应，不承载持续高频世界状态。
-// 错误码语义冻结于 docs/M4.md（GWG001-GWG204），只能追加不能复用。
+// 错误码语义冻结于 docs/M4.md（GWG001-GWG204，M5 追加 GWG205/GWG206），只能追加不能复用。
+// schema 演进只允许追加字段/枚举值；既有字段编号与语义冻结。
 
 service GeoWorldControl {
   rpc OpenSession(OpenSessionRequest) returns (OpenSessionResponse);
@@ -73,6 +74,8 @@ enum CommandStatus {
   APPLIED = 2;
   REJECTED = 3;
   DUPLICATE = 4;
+  // M5 durable admission：命令已持久化到 WAL（携带 durable_lsn），尚未执行。
+  DURABLE_ACCEPTED = 5;
 }
 
 message OpenSessionRequest {
@@ -142,12 +145,16 @@ message SubmitCommandRequest {
   map<string, PropertyValue> parameters = 5;
   uint64 expected_object_version = 6;
   uint64 target_tick_hint = 7;
+  // M5 durable admission 幂等键：固定 16 原始字节（128 位）；缺省走 M4 进程内去重路径。
+  optional bytes request_id = 8;
 }
 
 message SubmitCommandResponse {
   CommandStatus status = 1;
   uint64 ingress_sequence = 2;
   Error error = 3;
+  // DURABLE_ACCEPTED 时携带 WAL LSN；其余状态为 0。
+  uint64 durable_lsn = 4;
 }
 
 message RequestKeyframeRequest {

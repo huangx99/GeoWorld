@@ -12,6 +12,7 @@ option(GW_BUILD_BENCHMARKS "Build GeoWorld benchmarks" ON)
 option(GW_REQUIRE_FLECS "Fail configuration when flecs is unavailable" OFF)
 option(GW_BUILD_TOOLING_GUI "Build the Qt behavior authoring application" OFF)
 option(GW_BUILD_M4 "Build M4 network targets (protocol, gateway)" OFF)
+option(GW_BUILD_M5 "Build M5 persistence targets (WAL, durable log)" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -350,6 +351,80 @@ target_include_directories(geoworld_projection PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libs/projection/include>
 )
 
+# M5-A：持久化 WAL 与 durable 日志。目标由 GW_BUILD_M5 显式控制。
+if(GW_BUILD_M5)
+    if(NOT flatbuffers_FOUND)
+        message(FATAL_ERROR "GW_BUILD_M5 requires flatbuffers")
+    endif()
+    find_package(Crc32c CONFIG REQUIRED)
+    find_package(zstd CONFIG REQUIRED)
+    find_package(mio CONFIG REQUIRED)
+    if(NOT TARGET Boost::headers AND NOT TARGET Boost::boost)
+        message(FATAL_ERROR "GW_BUILD_M5 requires Boost headers (boost-uuid)")
+    endif()
+
+    set(GW_M5_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/m5")
+    set(GW_M5_PERSISTENCE_GENERATED
+        "${GW_M5_GENERATED_DIR}/wal_record_generated.h"
+        "${GW_M5_GENERATED_DIR}/checkpoint_manifest_generated.h"
+        "${GW_M5_GENERATED_DIR}/replay_manifest_generated.h"
+        "${GW_M5_GENERATED_DIR}/branch_manifest_generated.h"
+        "${GW_M5_GENERATED_DIR}/world_checkpoint_generated.h"
+    )
+    add_custom_command(
+        OUTPUT ${GW_M5_PERSISTENCE_GENERATED}
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${GW_M5_GENERATED_DIR}"
+        COMMAND $<TARGET_FILE:flatbuffers::flatc>
+                --cpp --scoped-enums -o "${GW_M5_GENERATED_DIR}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/schemas/persistence/wal_record.fbs"
+                "${CMAKE_CURRENT_SOURCE_DIR}/schemas/persistence/checkpoint_manifest.fbs"
+                "${CMAKE_CURRENT_SOURCE_DIR}/schemas/persistence/replay_manifest.fbs"
+                "${CMAKE_CURRENT_SOURCE_DIR}/schemas/persistence/branch_manifest.fbs"
+                "${CMAKE_CURRENT_SOURCE_DIR}/schemas/persistence/world_checkpoint.fbs"
+        DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/schemas/persistence/wal_record.fbs"
+            "${CMAKE_CURRENT_SOURCE_DIR}/schemas/persistence/checkpoint_manifest.fbs"
+            "${CMAKE_CURRENT_SOURCE_DIR}/schemas/persistence/replay_manifest.fbs"
+            "${CMAKE_CURRENT_SOURCE_DIR}/schemas/persistence/branch_manifest.fbs"
+            "${CMAKE_CURRENT_SOURCE_DIR}/schemas/persistence/world_checkpoint.fbs"
+        VERBATIM
+    )
+
+    add_library(geoworld_persistence STATIC
+        libs/persistence/src/manifest.cpp
+        libs/persistence/src/storage.cpp
+        libs/persistence/src/types.cpp
+        libs/persistence/src/wal_codec.cpp
+        libs/persistence/src/wal_reader.cpp
+        libs/persistence/src/wal_writer.cpp
+        # 仅头文件：建立对 flatc codegen 自定义命令的依赖；生成类型不进公共 API。
+        ${GW_M5_PERSISTENCE_GENERATED}
+    )
+    add_library(geoworld::persistence ALIAS geoworld_persistence)
+    # CRC32C/zstd/mio/Boost/FlatBuffers 只进入实现层，全部为 PRIVATE。
+    target_link_libraries(geoworld_persistence
+        PUBLIC geoworld::foundation
+        PRIVATE
+            flatbuffers::flatbuffers
+            Crc32c::crc32c
+            zstd::libzstd
+            mio::mio
+    )
+    if(TARGET Boost::headers)
+        target_link_libraries(geoworld_persistence PRIVATE Boost::headers)
+    else()
+        target_link_libraries(geoworld_persistence PRIVATE Boost::boost)
+    endif()
+    target_include_directories(geoworld_persistence PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libs/persistence/include>
+    )
+    target_include_directories(geoworld_persistence PRIVATE
+        "${GW_M5_GENERATED_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/libs/persistence/src"
+    )
+    target_compile_options(geoworld_persistence PRIVATE -Wall -Wextra)
+endif()
+
 # M4-B/M4-C：版本化协议与 Gateway。网络目标由 GW_BUILD_M4 显式控制。
 if(GW_BUILD_M4)
     if(NOT flatbuffers_FOUND)
@@ -421,6 +496,7 @@ if(GW_BUILD_M4)
         libs/gateway/src/auth.cpp
         libs/gateway/src/config.cpp
         libs/gateway/src/control_server.cpp
+        libs/gateway/src/durable.cpp
         libs/gateway/src/errors.cpp
         libs/gateway/src/frame_codec.cpp
         libs/gateway/src/gateway_core.cpp
@@ -455,6 +531,14 @@ if(GW_BUILD_M4)
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libs/gateway/include>
     )
     target_include_directories(geoworld_gateway PRIVATE "${GW_M4_GENERATED_DIR}")
+
+    # M5 durable admission 桥接：唯一暴露 persistence 类型的 gateway 源文件，
+    # 只在 GW_BUILD_M5 下编译并链接（PUBLIC：组合根经桥接头接触 persistence 类型）。
+    if(GW_BUILD_M5 AND TARGET geoworld_persistence)
+        target_sources(geoworld_gateway PRIVATE libs/gateway/src/durable_persistence.cpp)
+        target_link_libraries(geoworld_gateway PUBLIC geoworld::persistence)
+        target_compile_definitions(geoworld_gateway PUBLIC GW_GATEWAY_DURABLE_PERSISTENCE=1)
+    endif()
 
     # 参考客户端共享实现：gw-stream-client 与 m4 集成测试复用。
     add_library(geoworld_stream_client STATIC
@@ -506,6 +590,13 @@ if(GW_BUILD_APPS)
         target_compile_definitions(geoworldd PRIVATE GW_BUILD_M4=1)
     else()
         target_compile_definitions(geoworldd PRIVATE GW_BUILD_M4=0)
+    endif()
+    # M5 durable admission 接线需要 M4 组合根与 persistence 同时具备。
+    if(GW_BUILD_M4 AND TARGET geoworld_persistence AND TARGET geoworld_world_runtime)
+        target_link_libraries(geoworldd PRIVATE geoworld::persistence)
+        target_compile_definitions(geoworldd PRIVATE GW_BUILD_M5=1)
+    else()
+        target_compile_definitions(geoworldd PRIVATE GW_BUILD_M5=0)
     endif()
     if(TARGET geoworld_stream_client)
         add_executable(gw-stream-client tools/gw-stream-client/main.cpp)
@@ -705,6 +796,13 @@ if(GW_BUILD_TESTS)
     target_link_libraries(geoworld-projection-test PRIVATE geoworld::projection)
     add_test(NAME geoworld.projection COMMAND geoworld-projection-test)
 
+    if(TARGET geoworld_persistence)
+        add_executable(geoworld-persistence-test tests/unit/persistence_test.cpp)
+        target_link_libraries(geoworld-persistence-test PRIVATE geoworld::persistence)
+        target_compile_options(geoworld-persistence-test PRIVATE -Wall -Wextra)
+        add_test(NAME geoworld.persistence COMMAND geoworld-persistence-test)
+    endif()
+
     if(TARGET geoworld_protocol)
         add_executable(geoworld-protocol-test tests/unit/protocol_test.cpp)
         target_link_libraries(geoworld-protocol-test PRIVATE geoworld::protocol)
@@ -745,6 +843,20 @@ if(GW_BUILD_TESTS)
                 GW_GEOWORLD_DAEMON_PATH="$<TARGET_FILE:geoworldd>")
         endif()
         add_test(NAME geoworld.m4_security COMMAND geoworld-m4-security-test)
+    endif()
+
+    # M5 durable admission：gateway + persistence + world_runtime 三者齐备才注册。
+    if(TARGET geoworld_gateway AND TARGET geoworld_persistence
+            AND TARGET geoworld_world_runtime)
+        add_executable(geoworld-m5-durable-test tests/integration/m5_durable_test.cpp)
+        target_link_libraries(geoworld-m5-durable-test PRIVATE
+            geoworld::gateway
+            geoworld::persistence
+            geoworld::projection
+            geoworld::world_runtime
+        )
+        target_compile_options(geoworld-m5-durable-test PRIVATE -Wall -Wextra)
+        add_test(NAME geoworld.m5_durable COMMAND geoworld-m5-durable-test)
     endif()
 
     if(TARGET geoworld-showcase)

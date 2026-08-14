@@ -11,6 +11,7 @@
 #include <grpcpp/security/server_credentials.h>
 
 #include <charconv>
+#include <cstring>
 #include <deque>
 #include <fstream>
 #include <future>
@@ -173,6 +174,8 @@ void fill_error(pb::Error* error, GatewayError gateway_error) {
         return pb::REJECTED;
     case ReceiptStatus::duplicate:
         return pb::DUPLICATE;
+    case ReceiptStatus::durable_accepted:
+        return pb::DURABLE_ACCEPTED;
     }
     return pb::COMMAND_STATUS_UNSPECIFIED;
 }
@@ -309,6 +312,53 @@ public:
     grpc::Status SubmitCommand(grpc::ServerContext* /*context*/,
                                const pb::SubmitCommandRequest* request,
                                pb::SubmitCommandResponse* response) override {
+        // 携带 request_id 走 durable admission：结论可能跨多次 poll 才达成，
+        // 处理器线程继续阻塞在 future 上，world tick 不被阻塞。
+        if (request->has_request_id()) {
+            return dispatch_async(
+                [this, request, response](std::function<void()> finish) {
+                    const auto reject = [response, &finish](GatewayError error) {
+                        response->set_status(pb::REJECTED);
+                        fill_error(response->mutable_error(), error);
+                        finish();
+                    };
+                    const std::optional<SessionId> id =
+                        decode_session_id(request->session_id());
+                    if (!id.has_value()
+                        || request->request_id().size() != durable_request_id_bytes) {
+                        reject(GatewayError::invalid_request);
+                        return;
+                    }
+                    const auto [mapping_error, params] = to_command_params(*request);
+                    if (mapping_error != GatewayError::none) {
+                        reject(mapping_error);
+                        return;
+                    }
+                    DurableRequestId request_id{};
+                    std::memcpy(request_id.data(), request->request_id().data(),
+                                request_id.size());
+                    ExternalCommand command;
+                    command.session = *id;
+                    command.client_sequence = request->client_sequence();
+                    command.target_wid = foundation::WorldId{request->target_wid()};
+                    command.params = params;
+                    command.expected_object_version = request->expected_object_version();
+                    command.target_tick_hint = request->target_tick_hint();
+                    command.request_id = request_id;
+                    core_.submit_durable_command(
+                        *id, command, current_tick(),
+                        [response, finish = std::move(finish)](
+                            GatewayError error, const CommandReceipt& receipt) {
+                            response->set_status(to_pb_status(receipt.status));
+                            response->set_ingress_sequence(receipt.ingress_sequence);
+                            response->set_durable_lsn(receipt.durable_lsn);
+                            if (error != GatewayError::none) {
+                                fill_error(response->mutable_error(), error);
+                            }
+                            finish();
+                        });
+                });
+        }
         return dispatch([this, request, response] {
             const std::optional<SessionId> id = decode_session_id(request->session_id());
             if (!id.has_value()) {
@@ -382,6 +432,22 @@ private:
             done->set_value();
         });
         // 处理器线程在此阻塞，主线程 poll() 执行 handler 后唤醒；超时保护进程关停路径。
+        if (finished.wait_for(config_.dispatch_timeout) != std::future_status::ready) {
+            return grpc::Status{grpc::StatusCode::UNAVAILABLE,
+                                "control dispatch timeout"};
+        }
+        return grpc::Status::OK;
+    }
+
+    // durable 路径：handler 收到 finish 回调并自行决定何时调用（可跨多次 poll）。
+    // finish 恰好调用一次；job 入队后处理器线程照旧阻塞等待，dispatch_timeout 兜底。
+    template <typename Fn>
+    [[nodiscard]] grpc::Status dispatch_async(Fn&& handler) {
+        auto done = std::make_shared<std::promise<void>>();
+        std::future<void> finished = done->get_future();
+        post([handler = std::forward<Fn>(handler), done]() mutable {
+            handler([done]() { done->set_value(); });
+        });
         if (finished.wait_for(config_.dispatch_timeout) != std::future_status::ready) {
             return grpc::Status{grpc::StatusCode::UNAVAILABLE,
                                 "control dispatch timeout"};

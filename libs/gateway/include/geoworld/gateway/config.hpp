@@ -24,6 +24,8 @@ struct GatewayConfig {
     std::size_t max_sessions{1024};
     std::size_t max_command_parameters{64};
     double max_aoi_extent_meters{100'000.0};
+    // ingress 序列起始值：仅测试注入回绕边界使用，生产保持 0（首条命令分配 1）。
+    std::uint64_t initial_ingress_sequence{0};
 };
 
 [[nodiscard]] bool validate(const GatewayConfig& config, std::string& diagnostic);

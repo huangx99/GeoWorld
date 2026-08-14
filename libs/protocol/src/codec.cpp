@@ -524,7 +524,7 @@ bool fail(DecodeFailure& failure, std::string_view code, std::string message) {
     reliable.kind = static_cast<ReliableKind>(kind);
     if (const auto* receipt = source->receipt(); receipt != nullptr) {
         const auto status = static_cast<std::uint8_t>(receipt->status());
-        if (status > static_cast<std::uint8_t>(ReceiptStatus::duplicate)) {
+        if (status > static_cast<std::uint8_t>(ReceiptStatus::durable_accepted)) {
             return fail(failure, error_invalid_request, "receipt status 枚举越界");
         }
         reliable.receipt.client_sequence = receipt->client_sequence();

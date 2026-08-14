@@ -1,0 +1,16 @@
+namespace geoworld.persistence.v1;
+
+// GeoWorld M5 推演分支 manifest。M5-A 只冻结骨架与格式版本，
+// fork 点、overlay 引用与输入差异记录在 M5-D 落地时补全。
+
+table BranchManifest {
+  format_version:uint = 1;
+  world_id:ulong;
+  branch_id:[ubyte];       // 固定 16 字节线格式
+  parent_branch_id:[ubyte];
+  fork_tick:ulong;
+  fork_lsn:ulong;
+}
+
+root_type BranchManifest;
+file_identifier "GWBM";

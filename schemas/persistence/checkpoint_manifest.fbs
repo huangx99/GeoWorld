@@ -1,0 +1,17 @@
+namespace geoworld.persistence.v1;
+
+// GeoWorld M5 检查点 manifest。M5-A 只冻结骨架字段与格式版本，
+// provider 块列表、随机流与制品清单在 M5-B 落地时按追加演进补全。
+
+table CheckpointManifest {
+  format_version:uint = 1;
+  world_id:ulong;
+  branch_id:[ubyte];      // 固定 16 字节线格式
+  completed_tick:ulong;
+  resume_tick:ulong;
+  included_lsn:ulong;
+  state_hash:ulong;
+}
+
+root_type CheckpointManifest;
+file_identifier "GWCM";

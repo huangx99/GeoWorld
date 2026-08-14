@@ -36,6 +36,10 @@
       "description": "Protocol and gateway dependencies",
       "dependencies": ["grpc", "protobuf", "boost-asio", "boost-beast", "openssl", "mimalloc"]
     },
+    "m5": {
+      "description": "Persistence, WAL and replay dependencies",
+      "dependencies": ["crc32c", "zstd", "mio", "boost-uuid"]
+    },
     "observability": {
       "description": "Production logging and tracing adapters",
       "dependencies": ["fmt", "spdlog"]

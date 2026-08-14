@@ -389,6 +389,9 @@ namespace fb = geoworld::stream::v1;
     case ReceiptStatus::duplicate:
         wire.status = protocol::ReceiptStatus::duplicate;
         break;
+    case ReceiptStatus::durable_accepted:
+        wire.status = protocol::ReceiptStatus::durable_accepted;
+        break;
     }
     wire.error_code = error_code(receipt.error);
     return wire;

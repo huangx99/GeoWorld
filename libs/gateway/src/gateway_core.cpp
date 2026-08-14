@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <utility>
 
 namespace geoworld::gateway {
@@ -26,7 +27,8 @@ GatewayCore::GatewayCore(GatewayConfig config, projection::ProjectionEngine& eng
                                        config_.max_sessions},
                 std::move(clock), std::move(tokens)),
       control_api_version_(control_api_version),
-      data_schema_version_(data_schema_version) {}
+      data_schema_version_(data_schema_version),
+      ingress_sequence_(config_.initial_ingress_sequence) {}
 
 void GatewayCore::set_command_submitter(CommandSubmitter submitter) {
     submitter_ = std::move(submitter);
@@ -153,6 +155,75 @@ void GatewayCore::set_heartbeat_encoder(HeartbeatEncoder encoder) {
     return GatewayError::none;
 }
 
+[[nodiscard]] GatewayCore::AdmissionDecision GatewayCore::check_command_admission(
+    SessionId id, const SessionInfo& info, const ExternalCommand& command,
+    std::uint64_t current_tick) {
+    AdmissionDecision decision;
+
+    if (!sessions_.consume_command_budget(id)) {
+        decision.error = GatewayError::rate_limited;
+        return decision;
+    }
+
+    // 目标 tick 窗口：[current + 1, current + max_lead]；hint 为 0 时由 Gateway 安排。
+    std::uint64_t target_tick = current_tick + config_.command_lead_ticks;
+    if (command.target_tick_hint != 0) {
+        target_tick = command.target_tick_hint;
+    }
+    if (target_tick < current_tick + 1
+        || target_tick > current_tick + config_.max_command_lead_ticks) {
+        decision.error = GatewayError::tick_out_of_window;
+        return decision;
+    }
+    decision.target_tick = target_tick;
+
+    if (const auto* set_property = std::get_if<SetPropertyParams>(&command.params)) {
+        if (!command.target_wid.valid()) {
+            decision.error = GatewayError::invalid_request;
+            return decision;
+        }
+        if (!authorization_->can_write_property(info.principal, command.target_wid,
+                                                set_property->key)) {
+            decision.error = GatewayError::permission_denied;
+            return decision;
+        }
+        if (!ownership_.holds(id, command.target_wid, set_property->key, current_tick)) {
+            decision.error = GatewayError::permission_denied;
+            return decision;
+        }
+        decision.payload = simulation::SetPropertyCommand{
+            command.target_wid, set_property->key, set_property->value};
+    } else if (const auto* create = std::get_if<CreateObjectParams>(&command.params)) {
+        if (!authorization_->can_manage_objects(info.principal)) {
+            decision.error = GatewayError::permission_denied;
+            return decision;
+        }
+        if (!create->requested_id.valid()
+            || create->properties.size() > config_.max_command_parameters) {
+            decision.error = GatewayError::invalid_request;
+            return decision;
+        }
+        world::WorldObject object;
+        object.id = create->requested_id;
+        object.semantic_type = create->semantic_type;
+        object.geometry_ref = create->geometry_ref;
+        object.position = create->position;
+        object.properties = create->properties;
+        decision.payload = simulation::CreateObjectCommand{std::move(object)};
+    } else {
+        if (!authorization_->can_manage_objects(info.principal)) {
+            decision.error = GatewayError::permission_denied;
+            return decision;
+        }
+        if (!command.target_wid.valid()) {
+            decision.error = GatewayError::invalid_request;
+            return decision;
+        }
+        decision.payload = simulation::DestroyObjectCommand{command.target_wid};
+    }
+    return decision;
+}
+
 [[nodiscard]] std::pair<GatewayError, CommandReceipt> GatewayCore::submit_command(
     SessionId id, const ExternalCommand& command, std::uint64_t current_tick) {
     const auto rejected = [&command](GatewayError error) {
@@ -174,73 +245,192 @@ void GatewayCore::set_heartbeat_encoder(HeartbeatEncoder encoder) {
         return std::make_pair(GatewayError::none, duplicate);
     }
 
-    if (!sessions_.consume_command_budget(id)) {
-        return rejected(GatewayError::rate_limited);
-    }
-
-    // 目标 tick 窗口：[current + 1, current + max_lead]；hint 为 0 时由 Gateway 安排。
-    std::uint64_t target_tick = current_tick + config_.command_lead_ticks;
-    if (command.target_tick_hint != 0) {
-        target_tick = command.target_tick_hint;
-    }
-    if (target_tick < current_tick + 1
-        || target_tick > current_tick + config_.max_command_lead_ticks) {
-        return rejected(GatewayError::tick_out_of_window);
-    }
-
-    simulation::CommandPayload payload;
-    if (const auto* set_property = std::get_if<SetPropertyParams>(&command.params)) {
-        if (!command.target_wid.valid()) {
-            return rejected(GatewayError::invalid_request);
-        }
-        if (!authorization_->can_write_property(info->principal, command.target_wid,
-                                                set_property->key)) {
-            return rejected(GatewayError::permission_denied);
-        }
-        if (!ownership_.holds(id, command.target_wid, set_property->key, current_tick)) {
-            return rejected(GatewayError::permission_denied);
-        }
-        payload = simulation::SetPropertyCommand{
-            command.target_wid, set_property->key, set_property->value};
-    } else if (const auto* create = std::get_if<CreateObjectParams>(&command.params)) {
-        if (!authorization_->can_manage_objects(info->principal)) {
-            return rejected(GatewayError::permission_denied);
-        }
-        if (!create->requested_id.valid()
-            || create->properties.size() > config_.max_command_parameters) {
-            return rejected(GatewayError::invalid_request);
-        }
-        world::WorldObject object;
-        object.id = create->requested_id;
-        object.semantic_type = create->semantic_type;
-        object.geometry_ref = create->geometry_ref;
-        object.position = create->position;
-        object.properties = create->properties;
-        payload = simulation::CreateObjectCommand{std::move(object)};
-    } else {
-        if (!authorization_->can_manage_objects(info->principal)) {
-            return rejected(GatewayError::permission_denied);
-        }
-        if (!command.target_wid.valid()) {
-            return rejected(GatewayError::invalid_request);
-        }
-        payload = simulation::DestroyObjectCommand{command.target_wid};
+    const AdmissionDecision decision =
+        check_command_admission(id, *info, command, current_tick);
+    if (decision.error != GatewayError::none) {
+        return rejected(decision.error);
     }
 
     if (!submitter_) {
         return rejected(GatewayError::invalid_request);
     }
+    // ingress 序列回绕耗尽：明确拒绝而不是产生重复 ingress_sequence。
+    if (ingress_sequence_ == std::numeric_limits<std::uint64_t>::max()) {
+        return rejected(GatewayError::limit_exceeded);
+    }
     const std::uint64_t ingress = ++ingress_sequence_;
     simulation::CommandMeta meta;
     meta.ingress_sequence = ingress;
     meta.expected_object_version = command.expected_object_version;
-    static_cast<void>(submitter_(target_tick, std::move(payload), meta));
+    // submitter 返回 0 表示入队失败（序列回绕），admission 必须拒绝而不是静默丢弃。
+    if (submitter_(decision.target_tick, std::move(decision.payload), meta) == 0) {
+        return rejected(GatewayError::limit_exceeded);
+    }
 
     pending_commands_.emplace(ingress, PendingCommand{id, command.client_sequence});
     CommandReceipt receipt{ReceiptStatus::accepted, GatewayError::none,
                            command.client_sequence, ingress};
     sessions_.store_receipt(id, receipt);
     return std::make_pair(GatewayError::none, receipt);
+}
+
+void GatewayCore::set_durable_log(std::shared_ptr<DurableAdmissionLog> log) {
+    durable_log_ = std::move(log);
+}
+
+void GatewayCore::submit_durable_command(SessionId id, const ExternalCommand& command,
+                                         std::uint64_t current_tick,
+                                         DurableCompletion completion) {
+    const auto finish_rejected = [&completion, &command](GatewayError error) {
+        completion(error, CommandReceipt{ReceiptStatus::rejected, error,
+                                         command.client_sequence, 0});
+    };
+
+    const std::optional<SessionInfo> info = sessions_.find(id);
+    if (!info.has_value() || id != command.session || !command.request_id.has_value()) {
+        finish_rejected(GatewayError::invalid_request);
+        return;
+    }
+
+    const DurableIdempotencyIndex::Key key{info->principal.id, *command.request_id};
+    std::vector<std::byte> fingerprint = make_command_fingerprint(command);
+    const DurableIdempotencyIndex::LookupResult found =
+        durable_index_.lookup(key, fingerprint);
+    if (found.entry != nullptr) {
+        // 相同键不同内容：稳定拒绝，不覆盖既有登记。
+        if (!found.content_match) {
+            finish_rejected(GatewayError::idempotency_conflict);
+            return;
+        }
+        // 相同键相同内容：返回既有结果（pending 尚无 LSN，回 accepted 语义）。
+        CommandReceipt receipt;
+        receipt.client_sequence = found.entry->client_sequence;
+        receipt.ingress_sequence = found.entry->ingress_sequence;
+        receipt.durable_lsn = found.entry->lsn;
+        switch (found.entry->state) {
+        case DurableEntryState::pending:
+            receipt.status = ReceiptStatus::accepted;
+            break;
+        case DurableEntryState::durable_accepted:
+            receipt.status = ReceiptStatus::durable_accepted;
+            break;
+        case DurableEntryState::applied:
+            receipt.status = ReceiptStatus::applied;
+            break;
+        case DurableEntryState::rejected:
+            receipt.status = ReceiptStatus::rejected;
+            receipt.error = found.entry->error;
+            break;
+        }
+        completion(receipt.error, receipt);
+        return;
+    }
+
+    const AdmissionDecision decision =
+        check_command_admission(id, *info, command, current_tick);
+    if (decision.error != GatewayError::none) {
+        finish_rejected(decision.error);
+        return;
+    }
+    // durable 日志未配置或 WAL 立即拒绝（队列满/故障态）：GWG206。
+    if (!durable_log_) {
+        finish_rejected(GatewayError::durability_unavailable);
+        return;
+    }
+    if (ingress_sequence_ == std::numeric_limits<std::uint64_t>::max()) {
+        finish_rejected(GatewayError::limit_exceeded);
+        return;
+    }
+
+    DurableRecord record;
+    record.kind = DurableRecordKind::external_command;
+    record.target_tick = decision.target_tick;
+    record.payload = encode_external_command_record(
+        info->principal.id, *command.request_id, decision.target_tick, command);
+    std::unique_ptr<DurableTicket> ticket = durable_log_->append(record);
+    if (ticket == nullptr) {
+        finish_rejected(GatewayError::durability_unavailable);
+        return;
+    }
+
+    const std::uint64_t ingress = ++ingress_sequence_;
+    durable_index_.register_pending(key, std::move(fingerprint), command.client_sequence);
+
+    PendingDurable pending;
+    pending.key = key;
+    pending.session = id;
+    pending.client_sequence = command.client_sequence;
+    pending.ingress_sequence = ingress;
+    pending.target_tick = decision.target_tick;
+    pending.expected_object_version = command.expected_object_version;
+    pending.payload = std::move(decision.payload);
+    pending.ticket = std::move(ticket);
+    pending.completion = std::move(completion);
+    pending_durable_.emplace(ingress, std::move(pending));
+}
+
+void GatewayCore::poll_durable_tickets() {
+    // outcome 票据清扫：只保留仍在写入的。
+    for (auto ticket = durable_outcome_tickets_.begin();
+         ticket != durable_outcome_tickets_.end();) {
+        DurableAppendOutcome outcome;
+        if ((*ticket)->try_outcome(outcome)) {
+            ticket = durable_outcome_tickets_.erase(ticket);
+        } else {
+            ++ticket;
+        }
+    }
+
+    for (auto it = pending_durable_.begin(); it != pending_durable_.end();) {
+        DurableAppendOutcome outcome;
+        if (!it->second.ticket->try_outcome(outcome)) {
+            ++it;
+            continue;
+        }
+        auto node = pending_durable_.extract(it++);
+        PendingDurable pending = std::move(node.mapped());
+
+        if (!outcome.ok) {
+            // WAL 故障：登记作废，durable 承诺未达成，按 GWG206 终态拒绝。
+            durable_index_.erase(pending.key);
+            pending.completion(GatewayError::durability_unavailable,
+                               CommandReceipt{ReceiptStatus::rejected,
+                                              GatewayError::durability_unavailable,
+                                              pending.client_sequence, 0});
+            continue;
+        }
+
+        durable_index_.mark_durable_accepted(pending.key, outcome.lsn,
+                                             pending.ingress_sequence);
+        CommandReceipt receipt{ReceiptStatus::durable_accepted, GatewayError::none,
+                               pending.client_sequence, pending.ingress_sequence,
+                               outcome.lsn};
+
+        // durable 承诺达成后投递命令缓冲；入队失败转终态拒绝（不得静默丢弃）。
+        simulation::CommandMeta meta;
+        meta.ingress_sequence = pending.ingress_sequence;
+        meta.expected_object_version = pending.expected_object_version;
+        if (!submitter_
+            || submitter_(pending.target_tick, std::move(pending.payload), meta) == 0) {
+            durable_index_.mark_final(pending.key, false, GatewayError::limit_exceeded);
+            CommandReceipt final{ReceiptStatus::rejected, GatewayError::limit_exceeded,
+                                 pending.client_sequence, pending.ingress_sequence,
+                                 outcome.lsn};
+            sessions_.store_receipt(pending.session, final);
+            pending.completion(GatewayError::limit_exceeded, final);
+            continue;
+        }
+        sessions_.store_receipt(pending.session, receipt);
+        pending_commands_.emplace(
+            pending.ingress_sequence,
+            PendingCommand{pending.session, pending.client_sequence, pending.key});
+        pending.completion(GatewayError::none, receipt);
+    }
+}
+
+[[nodiscard]] bool GatewayCore::restore_durable_record(
+    DurableRecordKind kind, std::uint64_t lsn, std::span<const std::byte> payload) {
+    return durable_index_.restore(kind, lsn, payload);
 }
 
 [[nodiscard]] GatewayError GatewayCore::request_keyframe(SessionId id) {
@@ -452,6 +642,27 @@ void GatewayCore::on_commands_applied(const simulation::ApplyReport& report) {
             }
         }
         sessions_.store_receipt(command.session, receipt);
+
+        // durable 命令：终态写 command_outcome 记录并推进幂等索引。
+        // outcome 追加是尽力持久化；终态语义由内存索引与回执缓存立即生效。
+        if (command.durable_key.has_value()) {
+            durable_index_.mark_final(*command.durable_key,
+                                      receipt.status == ReceiptStatus::applied,
+                                      receipt.error);
+            if (durable_log_) {
+                DurableRecord record;
+                record.kind = DurableRecordKind::command_outcome;
+                record.payload = encode_command_outcome_record(
+                    command.durable_key->principal_id,
+                    command.durable_key->request_id, command.client_sequence,
+                    outcome.ingress_sequence,
+                    receipt.status == ReceiptStatus::applied, receipt.error);
+                std::unique_ptr<DurableTicket> ticket = durable_log_->append(record);
+                if (ticket != nullptr) {
+                    durable_outcome_tickets_.push_back(std::move(ticket));
+                }
+            }
+        }
 
         if (!receipt_encoder_) {
             continue;

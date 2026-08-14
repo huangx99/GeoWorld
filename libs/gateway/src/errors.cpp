@@ -20,6 +20,8 @@ namespace geoworld::gateway {
     case GatewayError::missing_object: return "GWG202";
     case GatewayError::tick_out_of_window: return "GWG203";
     case GatewayError::unsupported_operation: return "GWG204";
+    case GatewayError::idempotency_conflict: return "GWG205";
+    case GatewayError::durability_unavailable: return "GWG206";
     }
     return "GWG005";
 }

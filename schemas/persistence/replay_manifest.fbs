@@ -1,0 +1,16 @@
+namespace geoworld.persistence.v1;
+
+// GeoWorld M5 回放清单。M5-A 只冻结骨架与格式版本，
+// 可重放单元（检查点引用 + WAL 范围 + 兼容标识）在 M5-C 落地时补全。
+
+table ReplayManifest {
+  format_version:uint = 1;
+  world_id:ulong;
+  branch_id:[ubyte];      // 固定 16 字节线格式
+  base_checkpoint:[ubyte];
+  first_lsn:ulong;
+  last_lsn:ulong;
+}
+
+root_type ReplayManifest;
+file_identifier "GWRM";

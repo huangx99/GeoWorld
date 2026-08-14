@@ -83,6 +83,16 @@
         "VCPKG_MANIFEST_FEATURES": "m4",
         "GW_BUILD_M4": "ON"
       }
+    },
+    {
+      "name": "vcpkg-m5",
+      "inherits": "vcpkg-m4",
+      "binaryDir": "${sourceDir}/build/vcpkg-m5",
+      "cacheVariables": {
+        "VCPKG_MANIFEST_FEATURES": "m4;m5",
+        "GW_BUILD_M4": "ON",
+        "GW_BUILD_M5": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -94,7 +104,8 @@
     { "name": "vcpkg-m3", "configurePreset": "vcpkg-m3" },
     { "name": "vcpkg-m3-tooling", "configurePreset": "vcpkg-m3-tooling" },
     { "name": "vcpkg-m3-release", "configurePreset": "vcpkg-m3-release" },
-    { "name": "vcpkg-m4", "configurePreset": "vcpkg-m4" }
+    { "name": "vcpkg-m4", "configurePreset": "vcpkg-m4" },
+    { "name": "vcpkg-m5", "configurePreset": "vcpkg-m5" }
   ],
   "testPresets": [
     { "name": "default", "configurePreset": "default", "output": { "outputOnFailure": true } },
@@ -103,6 +114,7 @@
     { "name": "vcpkg-spatial", "configurePreset": "vcpkg-spatial", "output": { "outputOnFailure": true } },
     { "name": "vcpkg-m3", "configurePreset": "vcpkg-m3", "output": { "outputOnFailure": true } },
     { "name": "vcpkg-m3-tooling", "configurePreset": "vcpkg-m3-tooling", "output": { "outputOnFailure": true } },
-    { "name": "vcpkg-m4", "configurePreset": "vcpkg-m4", "output": { "outputOnFailure": true } }
+    { "name": "vcpkg-m4", "configurePreset": "vcpkg-m4", "output": { "outputOnFailure": true } },
+    { "name": "vcpkg-m5", "configurePreset": "vcpkg-m5", "output": { "outputOnFailure": true } }
   ]
 }
